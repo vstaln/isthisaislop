@@ -1,0 +1,6 @@
+t=0 planner 80b9b523 completed read-only; parent wrote the plan file
+t=1 Kobak resolved: 2406.07016
+t=2 plan saved
+t=3 Phase 0: ontology freeze (114 ids), loader, tests green
+t=4 Colab Run-All notebook: notebooks/SlopDetector_Colab.ipynb
+t=5 Smoke pipeline: weaklabel + construction + sklearn matches_ai_pile; GPU distill optional

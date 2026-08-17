@@ -1,0 +1,55 @@
+- id: rhet_present_participial
+  lane: rhetorical
+  unit: sentence
+  detector: heuristic
+  pattern: (?i),\s+\w+ing\b.{0,80}(?:\.|$)
+  fix: The comma-VBG tag is a proxy for present-participial clauses. Replace with a finite clause.
+  source: reinhart-biber
+  license: MIT-compatible
+  min_len_words: 0
+  paper: reinhart-2410.16107
+  enabled: true
+- id: rhet_nominalization_density
+  lane: rhetorical
+  unit: paragraph
+  detector: heuristic
+  pattern: (?i)\b\w{4,}(?:tion|sion|ment|ness|ity)s?\b
+  fix: High -tion/-ment/-ness/-ity rate. Prefer verbs over abstract nouns.
+  source: reinhart-biber
+  license: MIT-compatible
+  min_len_words: 80
+  paper: reinhart-2410.16107
+  enabled: true
+- id: rhet_copula_avoidance
+  lane: rhetorical
+  unit: paragraph
+  detector: heuristic
+  pattern: (?i)\b(?:is|are|was|were|be|been|being)\b
+  fix: Low be-verb ratio vs lexical verbs is the tell. Restore is/are where they are clearer.
+  source: reinhart-biber
+  license: MIT-compatible
+  min_len_words: 80
+  paper: reinhart-2410.16107
+  enabled: true
+- id: rhet_that_complement
+  lane: rhetorical
+  unit: sentence
+  detector: heuristic
+  pattern: (?i)\b(?:said|argued|claimed|noted|reported|suggested|found|showed|believed) that\b
+  fix: That-complement rate vs human baseline. Keep that when it prevents a garden path.
+  source: reinhart-biber
+  license: MIT-compatible
+  min_len_words: 0
+  paper: reinhart-2410.16107
+  enabled: true
+- id: rhet_adj_stacking
+  lane: rhetorical
+  unit: span
+  detector: heuristic
+  pattern: (?i)\b(?:a|an|the)\s+[A-Za-z]+,\s+[A-Za-z]+(?:,|\s+and)\s+[A-Za-z]+\b
+  fix: Stacked attributive adjectives. Keep one modifier that earns its place.
+  source: reinhart-biber
+  license: MIT-compatible
+  min_len_words: 0
+  paper: reinhart-2410.16107
+  enabled: true

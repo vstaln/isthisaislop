@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://slopdet.local/ontology/schema.json",
+  "title": "Slop pattern",
+  "description": "One frozen ontology entry. Ids are append-only. Disable with enabled=false; never reuse a deleted id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "lane",
+    "unit",
+    "detector",
+    "pattern",
+    "fix",
+    "source",
+    "license",
+    "min_len_words",
+    "paper",
+    "enabled"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable snake_case id. Never reused."
+    },
+    "lane": {
+      "type": "string",
+      "enum": ["style", "rhetorical", "construction"]
+    },
+    "unit": {
+      "type": "string",
+      "enum": ["span", "sentence", "paragraph", "piece"]
+    },
+    "detector": {
+      "type": "string",
+      "enum": ["regex", "heuristic", "model_only"]
+    },
+    "pattern": {
+      "type": "string",
+      "minLength": 1,
+      "description": "regex module pattern. Heuristic/model_only entries still ship a compiling proxy."
+    },
+    "fix": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Few-word rewrite instruction. A pattern with no fix is not evidence."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "license": {
+      "type": "string",
+      "enum": ["MIT-compatible", "CC-BY-SA-4.0"]
+    },
+    "min_len_words": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "paper": {
+      "type": ["string", "null"]
+    },
+    "enabled": {
+      "type": "boolean"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Is This AI Slop? (ITAIS) v1 result",
+  "type": "object",
+  "required": ["status", "hits"],
+  "properties": {
+    "status": { "enum": ["ok", "unverified_artifact"] },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "lane", "quote", "fix"],
+        "properties": {
+          "id": { "type": "string" },
+          "lane": { "enum": ["style", "rhetorical", "construction"] },
+          "unit": { "enum": ["span", "sentence", "paragraph", "piece"] },
+          "quote": { "type": "string" },
+          "fix": { "type": "string" }
+        }
+      }
+    },
+    "style_summary": { "type": ["string", "null"] },
+    "resemblance": {
+      "type": ["object", "null"],
+      "properties": {
+        "label": { "const": "matches_ai_pile" },
+        "text": { "type": "string" }
+      }
+    }
+  }
+}

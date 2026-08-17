@@ -1,0 +1,230 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+#
+# Derived from Wikipedia:Signs of AI writing
+# https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
+# License: CC BY-SA 4.0
+# https://creativecommons.org/licenses/by-sa/4.0/
+#
+# Share-alike applies to the descriptive text (fix blurbs) in this file.
+# Regex strings are functional. Do not paste these descriptions into Apache-2.0 source.
+#
+- id: wiki_significance_puffery
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:stands as a testament|marking a pivotal moment|reflects broader|symbolizing its (?:ongoing|enduring|lasting)|setting the stage for|indelible mark|evolving landscape|focal point|deeply rooted)\b
+  fix: Cut the legacy sermon. Keep the dated fact.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_notability_boilerplate
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:independent coverage|active social media presence|profiled in|widely-read outlets|significant, substantial, secondary coverage)\b
+  fix: Cite the source. Do not recite notability policy.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_promotional_tone
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:nestled (?:in|within)|in the heart of|rich (?:cultural )?heritage|natural beauty|diverse array|boasts a|renowned for)\b
+  fix: Drop the brochure. Name one specific place or fact.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_ai_vocabulary_cluster
+  lane: style
+  unit: paragraph
+  detector: heuristic
+  pattern: (?i)(?:\b(?:delve|tapestry|underscore|pivotal|vibrant|intricate|meticulous|landscape|testament|showcase|foster|align with)\b.*){3,}
+  fix: One inflated word can be accident. Three in one passage is the tell. Rewrite with plain nouns.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: wiki_copula_avoidance
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:serves as|stands as|marks a|functions as|operates as|holds the distinction of being|refers to)\b
+  fix: Use is or are. Stop dressing the copula.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: reinhart-2410.16107
+  enabled: true
+- id: wiki_negative_parallelism
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: '(?i)\b(?:not only .{0,40} but(?: also)?|it is not .{0,40}, it(?:[''’]s| is)|rather than .{0,30}$)'
+  fix: Drop the misconception-clearing frame. State the property.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_challenges_future
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?i)\b(?:challenges remain|future prospects|looking ahead|as .+ continues to evolve|more research is needed)\b
+  fix: Stop the outline close. End on what is known now.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_awards_heading
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)^#+\s+Awards and recognition\s*$
+  fix: Merge awards into the career section if they are few.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_title_heading
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^#\s+[A-Z].{0,80}\n\n
+  fix: Do not repeat the article title as the first heading.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_title_case_heading
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^#{2,3}\s+(?:[A-Z][a-z]+\s+){2,}[A-Z][a-z]+$
+  fix: Use sentence case in headings.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_boldface_overuse
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?:\*\*[^*]{2,40}\*\*.*){3,}
+  fix: Bold once, if at all. Stop sprinkling emphasis.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_inline_header_list
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?m)^[-*]\s+\*\*[^*]{2,40}\*\*:\s
+  fix: Turn canned bold-label bullets into sentences.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_emoji_formatting
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^[\t ]*(?:[✅❌⚠️📌🔍💡]|:[a-z_]+:)\s
+  fix: No emoji as structure.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_curly_quotes
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '[“”‘’].{0,80}[“”‘’]'
+  fix: Straight quotes unless the house style needs curls.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_collaborative_you
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: (?i)\b(?:I hope this helps|let me know if|I['’]d be happy to|as you requested)\b
+  fix: This is article text, not a chat reply. Cut the assistant voice.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_knowledge_cutoff
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: (?i)\b(?:as of my last (?:training|update)|I don['’]t have (?:access|information)|my knowledge cutoff)\b
+  fix: Delete the model disclaimer. Write from sources.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_placeholder_text
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:TODO|TBD|lorem ipsum|insert (?:text|citation|source) here|\[placeholder\])\b
+  fix: Replace placeholders before the text ships.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_skipping_heading_levels
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^#\s+.+\n+(?:#{3,}\s+)
+  fix: Do not skip from H1 to H3.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_thematic_break_spam
+  lane: style
+  unit: piece
+  detector: regex
+  pattern: (?m)(?:^---\s*\n){2,}
+  fix: Horizontal rules are not sectioning.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: wiki_valuable_insights
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bvaluable insights\b
+  fix: Name the finding. Insights is empty.
+  source: wikipedia-signs-of-ai-writing
+  license: CC-BY-SA-4.0
+  min_len_words: 0
+  paper: null
+  enabled: true

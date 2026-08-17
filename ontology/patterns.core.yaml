@@ -1,0 +1,979 @@
+- id: binary_contrast
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?i)\b(?:it(?:[''’]s| is) not(?: just| only)?.{0,80}?\b(?:it[''’]s|it is|but)\b|not (?:just|only)\b.{0,60}?\bbut(?: also)?\b|the question isn[''’]?t\b.{0,60}?\bit[''’]s\b)'
+  fix: State Y directly. Drop the not-X-but-Y frame.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: throat_clearing
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:here['’]?s the thing|here['’]?s what I mean|let me be clear|I['’]ll be honest|the uncomfortable truth is|here['’]?s the deal)\b
+  fix: Cut the opener. Start on the point.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: faux_insight
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:this is the part most people skip|what most people get wrong|here['’]s what nobody tells you|the part everyone misses|what nobody tells you)\b
+  fix: Drop the lone-expert setup. Make the claim stand alone.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: colon_reveal
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?m)^[A-Z][^.!?\n]{2,60}: [a-z]'
+  fix: Rewrite as a plain sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: superficial_analysis
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i),\s+(?:highlighting|underscoring|reflecting|showcasing|emphasizing|ensuring|symbolizing|demonstrating)\b
+  fix: Replace the trailing -ing clause with a concrete consequence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: importance_puffery
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:stands as a testament|marks a pivotal moment|plays a vital role|solidifies its position|underscores its significance|crucial role|key turning point)\b
+  fix: State the fact. Let the reader judge if it matters.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: interpretive_metadiscourse
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?i)\b(?:that last part matters(?: more than it sounds)?|the key point is|as you can see|this distinction matters|in other words)\b'
+  fix: Delete the aside, or replace it with a fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: weasel_attribution
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:experts agree|industry reports suggest|many argue|widely regarded as|studies show|observers have cited|some critics argue)\b
+  fix: Name the source or cut the claim.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: fake_strong_verb
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:serves as a|functions as a|acts as a|operates as a|stands as a)\b
+  fix: Use is/has, or name the actual action.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: synonym_cycling
+  lane: style
+  unit: sentence
+  detector: heuristic
+  pattern: (?i)\b(?:the agent|the assistant|the tool|the system|the platform)\b.{0,180}\b(?:the agent|the assistant|the tool|the system|the platform)\b
+  fix: Repeat the clear word. Do not rotate synonyms for style.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: negative_listing
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bnot a\b.{0,50}\bnot a\b.{0,50}\b(?:a |an |the )
+  fix: Just say Z. Drop the not-X not-Y list.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: dramatic_fragmentation
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)(?:\bthat['’]s it\. that['’]s the whole thing\b|(?m)^And [A-Z][^.!?\n]{0,50}\.\s*\nAnd )
+  fix: Use complete sentences. Stop stacking And-fragments.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: robotic_rhythm
+  lane: style
+  unit: paragraph
+  detector: heuristic
+  pattern: (?m)(?:^[A-Z][^.!?\n]{10,42}\.\s+){2}[A-Z][^.!?\n]{10,42}\.
+  fix: Vary sentence length and shape. Merge or split one of the three.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 40
+  paper: null
+  enabled: true
+- id: rhetorical_setup
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:what if I told you|think about it:|plot twist:)\b
+  fix: Drop the setup. Make the point.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: fake_profound_kicker
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: (?i)\b(?:and that(?:['’]s| is) the (?:whole |real )?point|the rest is (?:just )?noise|that(?:['’]s| is) the whole game)\b
+  fix: Delete the mic-drop. End on the last concrete sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: recap_ending
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?im)(?:^|(?<=[.!?]\s))(?:in conclusion|ultimately|overall|to sum up|in summary|to conclude)\s*[,:]
+  fix: End on the last concrete point. Do not restate the piece.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: formatting_slop
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?m)^#{1,3}\s+.+\n(?:.*\n){0,2}^#{1,3}\s+
+  fix: Drop headers over two-sentence sections. Write prose.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: em_dash_cluster
+  lane: style
+  unit: span
+  detector: regex
+  pattern: —[^.\n]{0,90}—
+  fix: Use a comma, period, or parentheses. Do not cluster dashes.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: ban_delve_class
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:delve|delves|delving|foster|fostering|leverage|leveraging|utilize|utilizing|facilitate|facilitating|empower|empowering|streamline|streamlining)\b
+  fix: Name the action. Use a concrete verb.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: ban_puffery_noun
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?i)\b(?:tapestry|realm|beacon|paradigm(?: shift)?)\b'
+  fix: Replace the metaphor with the actual thing.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: ban_puffery_adj
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:robust|cutting-edge|multifaceted|meticulous(?:ly)?|intricate|intricacies|paramount|transformative|vibrant|pivotal|groundbreaking|seamless(?:ly)?)\b
+  fix: Cut the adjective, or name the property it stands in for.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: ban_journey_verb
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:elevate|elevating|embark|embarking|supercharge|supercharging|harness|harnessing|ever-evolving)\b
+  fix: Use a plain verb. Say what actually happens.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: ban_showcase_verb
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:underscore|underscores|underscoring|showcase|showcases|showcasing|highlight|highlights|highlighting|emphasize|emphasizes|emphasizing)\b
+  fix: State the fact. Do not announce its importance.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: ban_corporate
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:synergy|synergies|pain points?|value proposition|thought leaders?(?:hip)?|circle back|touch base|move the needle)\b
+  fix: Say the work in ordinary words.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: ban_game_changer
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:game[- ]chang(?:er|ing)|this is huge|this changes everything|unlock(?:s|ing)? the power)\b
+  fix: Name the change. Drop the slogan.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: empty_adverb
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:literally|honestly|simply|actually|truly|fundamentally|importantly|crucially|inherently|inevitably)\b
+  fix: Cut the adverb if it adds nothing.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_worth_noting
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bit['’]?s worth noting\b
+  fix: Delete. Start with the fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_important_to_note
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?i)\bit[''’]?s important to note(?: that)?\b'
+  fix: Delete. State the fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_end_of_the_day
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bat the end of the day\b
+  fix: Cut the proverb. Make the claim.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_when_it_comes_to
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bwhen it comes to\b
+  fix: Name the subject and start.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_at_its_core
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bat its core\b
+  fix: Drop the frame. State the mechanism.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_todays
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin today['’]?s\b
+  fix: Cut the era opener. Name the situation.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_the_age_of
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin the age of\b
+  fix: Cut the era opener.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_the_world_of
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin the world of\b
+  fix: Name the field. Skip the tour.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_the_reality_is
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bthe reality is\b
+  fix: Drop the drumroll. State the fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_the_truth_is
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bthe truth is\b
+  fix: Drop the drumroll. State the fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_terms_of
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin terms of\b
+  fix: Rewrite with a direct object.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_with_regard_to
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bwith regard to\b
+  fix: Name the topic and continue.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_order_to
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin order to\b
+  fix: Rewrite as 'to' plus the verb.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_going_forward
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bgoing forward\b
+  fix: Cut it, or name the date.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_this_article
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin this article\b
+  fix: Do not announce the article.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_lets_dive_in
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\blet['’]?s dive (?:in|deeper|into)\b
+  fix: Start the first fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_unlock_the_power
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bunlock(?:s|ing)? the power of\b
+  fix: Name the action the reader can take.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_bridge_the_gap
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bbridge(?:s|ing)? the gap\b
+  fix: Name the two sides and the actual link.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_i_hope_this_helps
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bI hope this helps\b
+  fix: End on the last useful sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_i_hope_this_finds_you
+  lane: style
+  unit: span
+  detector: regex
+  pattern: '(?i)\bI hope this(?: email)? finds you well\b'
+  fix: Open with the reason you wrote.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_whether_youre
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bwhether you(?:['’]re| are) a\b.{0,40}\bor a\b
+  fix: Pick one reader. Write to them.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_from_x_to_y_opener
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)^From .{2,40} to .{2,40}[,.]
+  fix: Open with the specific case, not a range.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_this_is_where_x_comes_in
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bthis is where\b.{0,40}\bcomes in\b
+  fix: Introduce the thing without the drumroll.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_firstly_secondly_thirdly
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:firstly|secondly|thirdly)\b
+  fix: Use 1. 2. 3. or just write the points.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_without_further_ado
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bwithout further ado\b
+  fix: Cut the drumroll and start.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_in_a_nutshell
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin a nutshell\b
+  fix: State the summary as a sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_please_dont_hesitate
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bplease don['’]?t hesitate to (?:reach out|contact)\b
+  fix: Give the actual next step.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: phrase_not_just_x_but_y
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bit['’]?s not just about\b.{0,50}\bit['’]?s about\b
+  fix: State Y. Drop the not-just frame.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: rule_of_three
+  lane: style
+  unit: sentence
+  detector: heuristic
+  pattern: (?i)\b\w+,\s+\w+,\s+and\s+\w+\b
+  fix: Break the default trio. Use two, four, or one.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 20
+  paper: null
+  enabled: true
+- id: uniform_sentence_length
+  lane: construction
+  unit: paragraph
+  detector: heuristic
+  pattern: (?s)(?=.{80,})
+  fix: Mix a short sentence with a long one.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 80
+  paper: null
+  enabled: true
+- id: parataxis
+  lane: style
+  unit: paragraph
+  detector: heuristic
+  pattern: (?m)(?:^[A-Z][^.!?\n]{0,28}\.\s+){2}[A-Z][^.!?\n]{0,28}\.
+  fix: Connect the thoughts. Add a because, but, or which.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: hedging_seesaw
+  lane: style
+  unit: paragraph
+  detector: heuristic
+  pattern: (?i)\bon the one hand\b.{0,200}\bon the other hand\b
+  fix: Pick a side. Give the counterpoint one sentence.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: corporate_pep_talk
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: (?i)\b(?:together we can|exciting opportunity|passionate about|unlock(?:ing)? potential|drive(?:s|ing)? (?:impact|outcomes)|deliver(?:ing)? value)\b
+  fix: Write like someone who did the work, including the mess.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: identical_paragraph_structure
+  lane: construction
+  unit: piece
+  detector: heuristic
+  pattern: (?s)(?=.{200,})
+  fix: Break the topic-explain-example-transition mold.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 200
+  paper: null
+  enabled: true
+- id: bullet_overuse
+  lane: style
+  unit: paragraph
+  detector: regex
+  pattern: (?m)(?:^[\t ]*(?:[-*]|\d+\.)\s+.+\n){6,}
+  fix: Turn the list into sentences, or cap it at five.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: as_role_opener
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)^As an? [A-Z][^,.]{2,40},\s+I\b
+  fix: Say the thing. Do not announce credentials.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: cross_section_parallelism
+  lane: construction
+  unit: piece
+  detector: heuristic
+  pattern: (?s)(?=.{300,})
+  fix: Give each section a different shape and length.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 300
+  paper: null
+  enabled: true
+- id: passive_construction
+  lane: style
+  unit: sentence
+  detector: heuristic
+  pattern: (?i)\b(?:is being \w+ed|was found to be|are considered to be|has been shown to)\b
+  fix: Write the actor and the verb.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: mandatory_paragraph_transition
+  lane: style
+  unit: sentence
+  detector: regex
+  pattern: (?i)(?:^|\n)\s*(?:moreover|furthermore|additionally|in addition|that said|with that in mind)\s*,
+  fix: Let some paragraphs just stop.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: punct_em_dash_budget
+  lane: style
+  unit: piece
+  detector: heuristic
+  pattern: (?:—.*){2,}
+  fix: At most one em dash per 500 words.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 1
+  paper: null
+  enabled: true
+- id: punct_exclamation_budget
+  lane: style
+  unit: piece
+  detector: heuristic
+  pattern: (?:!.*){2,}
+  fix: At most one exclamation per 1,000 words.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 1
+  paper: null
+  enabled: true
+- id: punct_ellipsis_budget
+  lane: style
+  unit: piece
+  detector: heuristic
+  pattern: (?:\.{3}|…).*(?:\.{3}|…)
+  fix: One ellipsis per piece, only for a real trailing-off.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_certainly
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^(?:certainly|absolutely|sure|great question|that['’]s a great point)[,!]
+  fix: Answer. Skip the cheer.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_moreover
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Moreover,
+  fix: Start with the next fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_furthermore
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Furthermore,
+  fix: Start with the next fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_additionally
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Additionally,
+  fix: Start with the next fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: opener_interestingly
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Interestingly,
+  fix: State the interesting fact. Drop the label.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_notably
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Notably,
+  fix: State the fact. Drop the label.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_importantly
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Importantly,
+  fix: State the fact. Drop the label.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_indeed
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?im)^Indeed,
+  fix: Continue without the nod.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: opener_as_an_ai
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:as an AI|as a language model)\b
+  fix: Never announce the model.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: emoji_bullet
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^[\t ]*[✅🔥✨💡👉⭐️⭐]\s
+  fix: Write a sentence. Do not emoji-bullet.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: hashtag_stack
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?:#[A-Za-z0-9_]+)(?:\s+#[A-Za-z0-9_]+){2,}
+  fix: Zero to two hashtags, in the sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: markdown_in_plain
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?m)^\*\*[^*]{3,40}\*\*\s*$
+  fix: Do not bold a whole line for emphasis.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: copula_avoidance_surface
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\b(?:serves as|stands as|functions as|operates as|boasts a|features a)\b
+  fix: Use is or has when that is what you mean.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: reinhart-2410.16107
+  enabled: true
+- id: in_the_realm_of
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin the realm of\b
+  fix: Name the field.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: a_testament_to
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\ba testament to\b
+  fix: State what happened.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: kobak-2406.07016
+  enabled: true
+- id: rest_assured
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\brest assured\b
+  fix: Give the actual guarantee or drop it.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: it_goes_without_saying
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bit goes without saying\b
+  fix: If it goes without saying, delete it.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: in_essence
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin essence\b
+  fix: State the claim.
+  source: anti-ai-slop-writing
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: please_note_that
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bplease note that\b
+  fix: State the note as a fact.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: as_mentioned_earlier
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bas (?:mentioned|noted|discussed) earlier\b
+  fix: Repeat the fact if needed. Do not point at the earlier sentence.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
+- id: in_todays_digital_age
+  lane: style
+  unit: span
+  detector: regex
+  pattern: (?i)\bin today['’]?s (?:fast-paced |ever-changing |digital )?world\b
+  fix: Name the actual constraint.
+  source: no-ai-slop
+  license: MIT-compatible
+  min_len_words: 0
+  paper: null
+  enabled: true
