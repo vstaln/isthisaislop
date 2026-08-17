@@ -1,0 +1,30 @@
+# Data and weights (regenerate; pin hashes in artifacts/MANIFEST.json)
+data/
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/MANIFEST.json
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Notebooks / Colab
+.ipynb_checkpoints/
+
+# OS / editors
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Secrets
+.env
+.env.*
+credentials.json
