@@ -41,7 +41,7 @@ the experiment that would settle it) · STALE-BY (expires on a named condition).
   slices, not only on coai.
 - Copy rules are load-bearing product behaviour, not style: never "% AI", never "AI-generated", never
   "written by ChatGPT", never an authorship claim. Enforced by `slopdet.report.FORBIDDEN_SUBSTRINGS`
-  + tests (MEASURED: `uv run pytest -q`).
+  + tests (MEASURED: `python -m pytest -q` → 31 passed).
 - If ONNX/on-device export of the chosen backbone fails (§3.3), the backbone is wrong regardless of
   how good its AUC is. Do not train around a dead deployment path.
 
@@ -106,7 +106,8 @@ cheap one; if it clears §5's gates, the 1.2B never needs to run.
 
 ### 3.2 Training recipe (encoder path)
 
-- Body: **`slopdet.lfm.load_encoder_body`**, never `AutoModel`. MEASURED trap:
+- Body: **`slopdet.lfm.load_encoder_body`**, never `AutoModel`. MEASURED trap (reproduce by loading
+  both auto-classes with `output_loading_info=True`; recorded in `artifacts/MANIFEST.json`):
   `AutoModel.from_pretrained("LiquidAI/LFM2.5-Encoder-230M", trust_remote_code=True)` — the snippet the
   model card gives for downstream heads — returns a body with **every tensor freshly initialized**
   (embedding std 0.0200 vs 0.1011 when loaded; all params reported MISSING, checkpoint keys `lfm2.*`
