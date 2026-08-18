@@ -1,0 +1,349 @@
+"""Fine-tune an LFM2 backbone into the ITAIS detector.
+
+Two paths, one script. The encoder path is the recommended default (see docs/HANDOFF.md §3):
+
+    # recommended: bidirectional encoder, doc head + per-token lane head, one body
+    uv run python scripts/fine_tune_lfm.py --arch encoder --model LiquidAI/LFM2.5-Encoder-230M
+
+    # rev-1 alternative: causal decoder + LoRA sequence classifier, doc verdict only
+    uv run python scripts/fine_tune_lfm.py --arch decoder --model LiquidAI/LFM2.5-1.2B --max-len 2048
+
+    # no corpus needed: synthetic data, 3 steps, proves the graph/loss/export path works
+    uv run python scripts/fine_tune_lfm.py --arch encoder --smoke
+
+Outputs a bundle under --out: weights, tokenizer, calibration.json (threshold per register at 1% FPR)
+and manifest.json (args, git sha, seed, per-slice metrics, trained_on / never_trained_on).
+
+Never emits or stores a "% AI" number: the doc head is a pile-resemblance score, calibrated against a
+named human reference slice. See docs/HANDOFF.md §1.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import random
+import subprocess
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer
+
+from slopdet.lfm import load_encoder_body
+
+DOC_LABELS = {"human": 0, "ai": 1}
+
+
+@dataclass
+class Config:
+    arch: str = "encoder"
+    model: str = "LiquidAI/LFM2.5-Encoder-230M"
+    max_len: int = 512
+    batch_size: int = 8
+    grad_accum: int = 4
+    lr: float = 2e-5
+    epochs: int = 1
+    seed: int = 0
+    token_loss_weight: float = 0.5
+    precision: str = "fp16"
+    ckpt_every: int = 500
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+# ---------------------------------------------------------------- data
+
+
+def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool) -> list[dict]:
+    """Rows are dicts: text, label (0/1), spans (list of {lane,start,end}), register."""
+    if smoke:
+        slop = "Here's the thing: we leverage robust pipelines to unlock synergies. "
+        human = "Thursday mornings at the clinic were empty, so I counted 41 chairs. "
+        rows = []
+        for i in range(24):
+            rows.append({"text": slop * 3, "label": 1, "register": "smoke",
+                         "spans": [{"lane": "glue", "start": 25, "end": 33}]})
+            rows.append({"text": human * 3, "label": 0, "register": "smoke", "spans": []})
+        return rows
+
+    import pandas as pd
+
+    if spans_parquet and spans_parquet.exists():
+        df = pd.read_parquet(spans_parquet)
+        rows = []
+        for rec in df.to_dict("records"):
+            spans = rec.get("spans") or []
+            if isinstance(spans, str):
+                spans = json.loads(spans)
+            rows.append({
+                "text": rec["text"],
+                "label": int(rec.get("label", DOC_LABELS.get(str(rec.get("pile", "human")), 0))),
+                "register": rec.get("register", "coai"),
+                "spans": [s for s in spans if s.get("lane")],
+            })
+        return rows
+
+    if not doc_parquet or not doc_parquet.exists():
+        raise SystemExit(
+            f"no corpus at {doc_parquet} / {spans_parquet}. Rebuild it with the commands in "
+            "docs/HANDOFF.md §4, or pass --smoke to validate the code path without data."
+        )
+    df = pd.read_parquet(doc_parquet)
+    return [{"text": r["text"], "label": int(r["label"]), "register": r.get("register", "coai"),
+             "spans": []} for r in df.to_dict("records")]
+
+
+class SlopDataset(Dataset):
+    def __init__(self, rows: list[dict], tok, max_len: int, lanes: list[str]):
+        self.rows, self.tok, self.max_len = rows, tok, max_len
+        self.lane_ids = {lane: i + 1 for i, lane in enumerate(lanes)}  # 0 = no lane
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self.rows[idx]
+        enc = self.tok(row["text"], truncation=True, max_length=self.max_len,
+                       padding="max_length", return_offsets_mapping=True)
+        offsets = enc.pop("offset_mapping")
+        token_labels = [0] * len(offsets)
+        for span in row["spans"]:
+            lane_id = self.lane_ids.get(span["lane"])
+            if not lane_id:
+                continue
+            for pos, (start, end) in enumerate(offsets):
+                if end > start and start >= span["start"] and end <= span["end"]:
+                    token_labels[pos] = lane_id
+        item = {k: torch.tensor(v) for k, v in enc.items()}
+        item["doc_label"] = torch.tensor(row["label"])
+        item["token_labels"] = torch.tensor(token_labels)
+        return item
+
+
+# ---------------------------------------------------------------- model
+
+
+class EncoderDetector(nn.Module):
+    """LFM2 bidirectional body, mean-pooled doc head + per-token lane head."""
+
+    def __init__(self, model_name: str, n_lanes: int):
+        super().__init__()
+        self.body = load_encoder_body(model_name)
+        hidden = self.body.config.hidden_size
+        self.doc = nn.Linear(hidden, 2)
+        self.token = nn.Linear(hidden, n_lanes + 1)
+
+    def forward(self, input_ids, attention_mask):
+        states = self.body(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        mask = attention_mask.unsqueeze(-1).to(states.dtype)
+        pooled = (states * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
+        return self.doc(pooled), self.token(states)
+
+
+def build_decoder(model_name: str):
+    """Rev-1 path: causal LM with a 2-class head over the last token, LoRA-adapted."""
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForSequenceClassification
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, num_labels=2, trust_remote_code=True)
+    model.config.use_cache = False
+    if model.config.pad_token_id is None:
+        model.config.pad_token_id = model.config.eos_token_id
+    return get_peft_model(model, LoraConfig(
+        r=16, lora_alpha=32, lora_dropout=0.05, bias="none",
+        task_type="SEQ_CLS", target_modules="all-linear"))
+
+
+# ---------------------------------------------------------------- metrics
+
+
+def auroc(scores: list[float], labels: list[int]) -> float:
+    pairs = sorted(zip(scores, labels))
+    pos = sum(labels)
+    neg = len(labels) - pos
+    if not pos or not neg:
+        return float("nan")
+    rank_sum, rank = 0.0, 0
+    while rank < len(pairs):
+        tied = [i for i in range(rank, len(pairs)) if pairs[i][0] == pairs[rank][0]]
+        avg_rank = sum(i + 1 for i in tied) / len(tied)
+        rank_sum += sum(avg_rank for i in tied if pairs[i][1] == 1)
+        rank += len(tied)
+    return (rank_sum - pos * (pos + 1) / 2) / (pos * neg)
+
+
+def tpr_at_fpr(scores: list[float], labels: list[int], fpr: float = 0.01) -> tuple[float, float]:
+    human = sorted((s for s, y in zip(scores, labels) if y == 0), reverse=True)
+    if not human:
+        return float("nan"), float("nan")
+    threshold = human[min(int(len(human) * fpr), len(human) - 1)]
+    ai = [s for s, y in zip(scores, labels) if y == 1]
+    tpr = sum(s > threshold for s in ai) / len(ai) if ai else float("nan")
+    return tpr, threshold
+
+
+# ---------------------------------------------------------------- train
+
+
+def evaluate(model, loader, device, arch: str) -> tuple[list[float], list[int]]:
+    model.eval()
+    scores, labels = [], []
+    with torch.no_grad():
+        for batch in loader:
+            ids = batch["input_ids"].to(device)
+            mask = batch["attention_mask"].to(device)
+            doc_logits = model(ids, mask)[0] if arch == "encoder" else model(
+                input_ids=ids, attention_mask=mask).logits
+            scores += torch.softmax(doc_logits.float(), -1)[:, 1].cpu().tolist()
+            labels += batch["doc_label"].tolist()
+    model.train()
+    return scores, labels
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", choices=["encoder", "decoder"], default="encoder")
+    ap.add_argument("--model", default=Config.model)
+    ap.add_argument("--doc-parquet", type=Path, default=Path("data/coai_train.parquet"))
+    ap.add_argument("--spans-parquet", type=Path, default=Path("data/training/spans_coai_train.parquet"))
+    ap.add_argument("--out", type=Path, default=Path("artifacts/lfm"))
+    ap.add_argument("--max-len", type=int, default=Config.max_len)
+    ap.add_argument("--batch-size", type=int, default=Config.batch_size)
+    ap.add_argument("--grad-accum", type=int, default=Config.grad_accum)
+    ap.add_argument("--lr", type=float, default=Config.lr)
+    ap.add_argument("--epochs", type=int, default=Config.epochs)
+    ap.add_argument("--seed", type=int, default=Config.seed)
+    ap.add_argument("--precision", choices=["fp16", "fp32"], default=Config.precision)
+    ap.add_argument("--ckpt-every", type=int, default=Config.ckpt_every)
+    ap.add_argument("--val-frac", type=float, default=0.05)
+    ap.add_argument("--smoke", action="store_true", help="synthetic data, 3 steps, no corpus needed")
+    args = ap.parse_args()
+
+    cfg = Config(arch=args.arch, model=args.model, max_len=args.max_len, batch_size=args.batch_size,
+                 grad_accum=args.grad_accum, lr=args.lr, epochs=args.epochs, seed=args.seed,
+                 precision=args.precision, ckpt_every=args.ckpt_every)
+    set_seed(cfg.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if cfg.precision == "fp16" and device.type == "cuda" and torch.cuda.get_device_capability()[0] < 8:
+        print("[warn] Turing-class GPU: no bf16 and no flash-attn 2. fp16 + NaN preflight it is.")
+
+    rows = load_rows(args.doc_parquet, args.spans_parquet, args.smoke)
+    lanes = sorted({s["lane"] for r in rows for s in r["spans"]})
+    random.shuffle(rows)
+    val_rows, train_rows = [], []
+    for register in {r["register"] for r in rows}:
+        for label in (0, 1):
+            group = [r for r in rows if r["register"] == register and r["label"] == label]
+            take = max(1, int(len(group) * args.val_frac)) if group else 0
+            val_rows += group[:take]
+            train_rows += group[take:]
+    random.shuffle(train_rows)
+    print(f"[data] {len(train_rows)} train / {len(val_rows)} val · {len(lanes)} lanes")
+
+    tok = AutoTokenizer.from_pretrained(cfg.model, trust_remote_code=True)
+    train_ds = SlopDataset(train_rows, tok, cfg.max_len, lanes)
+    val_ds = SlopDataset(val_rows, tok, cfg.max_len, lanes)
+    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
+    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size)
+
+    model = (EncoderDetector(cfg.model, len(lanes)) if cfg.arch == "encoder"
+             else build_decoder(cfg.model)).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
+    use_amp = cfg.precision == "fp16" and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    doc_loss_fn = nn.CrossEntropyLoss()
+    token_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+
+    total_steps = max(1, len(train_dl) // cfg.grad_accum) * cfg.epochs
+    max_steps = 3 if args.smoke else total_steps * cfg.grad_accum
+    args.out.mkdir(parents=True, exist_ok=True)
+    step, started = 0, time.time()
+
+    for epoch in range(cfg.epochs):
+        for batch in train_dl:
+            ids = batch["input_ids"].to(device)
+            mask = batch["attention_mask"].to(device)
+            doc_y = batch["doc_label"].to(device)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                if cfg.arch == "encoder":
+                    doc_logits, token_logits = model(ids, mask)
+                    token_y = batch["token_labels"].to(device).masked_fill(mask == 0, -100)
+                    loss = doc_loss_fn(doc_logits, doc_y) + cfg.token_loss_weight * token_loss_fn(
+                        token_logits.reshape(-1, token_logits.size(-1)), token_y.reshape(-1))
+                else:
+                    loss = doc_loss_fn(model(input_ids=ids, attention_mask=mask).logits, doc_y)
+            if not torch.isfinite(loss):
+                raise SystemExit(
+                    "[abort] non-finite loss. On Turing (T4) fp16 is the usual cause: rerun with "
+                    "--precision fp32, or lower --lr. Do not 'fix' this by filtering the log."
+                )
+            scaler.scale(loss / cfg.grad_accum).backward()
+            step += 1
+            if step % cfg.grad_accum == 0:
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(opt)
+                scaler.update()
+                opt.zero_grad(set_to_none=True)
+            if step % 50 == 0 or args.smoke:
+                print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f}")
+            if cfg.ckpt_every and step % cfg.ckpt_every == 0:
+                torch.save({"step": step, "model": model.state_dict()}, args.out / "checkpoint.pt")
+            if step >= max_steps:
+                break
+        if step >= max_steps:
+            break
+
+    scores, labels = evaluate(model, val_dl, device, cfg.arch)
+    registers = [r["register"] for r in val_rows]
+    metrics: dict[str, dict] = {}
+    for register in sorted(set(registers)):
+        idx = [i for i, r in enumerate(registers) if r == register]
+        s = [scores[i] for i in idx]
+        y = [labels[i] for i in idx]
+        tpr, threshold = tpr_at_fpr(s, y)
+        metrics[register] = {"n": len(idx), "auroc": auroc(s, y), "tpr_at_1pct_fpr": tpr,
+                             "threshold": threshold}
+    tpr_all, threshold_all = tpr_at_fpr(scores, labels)
+    metrics["all"] = {"n": len(labels), "auroc": auroc(scores, labels),
+                      "tpr_at_1pct_fpr": tpr_all, "threshold": threshold_all}
+
+    torch.save(model.state_dict(), args.out / "model.pt")
+    tok.save_pretrained(args.out)
+    (args.out / "calibration.json").write_text(json.dumps(
+        {"fpr": 0.01, "per_register": {k: v["threshold"] for k, v in metrics.items()}}, indent=2) + "\n")
+    (args.out / "manifest.json").write_text(json.dumps({
+        "config": asdict(cfg), "lanes": lanes, "git_sha": git_sha(), "metrics": metrics,
+        "trained_on": [str(args.spans_parquet if args.spans_parquet.exists() else args.doc_parquet)]
+        if not args.smoke else ["synthetic-smoke"],
+        "never_trained_on": ["eval/labels/laguna.jsonl", "eval/labels/local.jsonl"],
+        "wall_seconds": round(time.time() - started, 1),
+        "note": "doc head is pile resemblance, not an authorship or %-AI claim",
+    }, indent=2) + "\n")
+    print(json.dumps(metrics, indent=2))
+    print(f"[done] bundle at {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
