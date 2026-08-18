@@ -63,6 +63,14 @@ def _para_features(para: str) -> list[float]:
     return [mean_len, ttr, comma, sub, mean_word]
 
 
+def over_explain_spans(text: str) -> list[dict[str, Any]]:
+    """Verbatim spans of over-explain phrases, e.g. 'the key point is'."""
+    return [
+        {"start": m.start(), "end": m.end(), "quote": text[m.start() : m.end()]}
+        for m in _OVER_EXPLAIN.finditer(text)
+    ]
+
+
 def construction_stats(text: str) -> dict[str, Any]:
     sents = _sentences(text)
     lengths = [len(s.split()) for s in sents]

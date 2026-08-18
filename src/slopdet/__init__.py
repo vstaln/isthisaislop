@@ -1,3 +1,3 @@
-"""ITAIS (Is This AI Slop?) — checkable-hit + resemblance detector. Import: slopdet."""
+"""ITAIS (Is This AI Slop?) — classifier + checkable why. Import: slopdet."""
 
 __version__ = "0.1.0"

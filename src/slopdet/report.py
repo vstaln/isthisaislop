@@ -29,7 +29,8 @@ def render_hits(
                 "lane": h.get("lane", "style"),
                 "unit": h.get("unit", "span"),
                 "quote": h.get("quote", ""),
-                "fix": h.get("fix", ""),
+                "say": h.get("say") or h.get("fix", ""),
+                "fix": h.get("fix") or h.get("say", ""),
             }
             for h in style
         ],

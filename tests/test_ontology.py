@@ -20,6 +20,7 @@ YAML_FILES = (
     ONTOLOGY_DIR / "patterns.core.yaml",
     ONTOLOGY_DIR / "patterns.wikipedia.yaml",
     ONTOLOGY_DIR / "patterns.rhetorical.yaml",
+    ONTOLOGY_DIR / "patterns.slop.yaml",
 )
 REQUIRED_KEYS = {
     "id",
@@ -37,7 +38,7 @@ REQUIRED_KEYS = {
 LANES = {"style", "rhetorical", "construction"}
 UNITS = {"span", "sentence", "paragraph", "piece"}
 DETECTORS = {"regex", "heuristic", "model_only"}
-LICENSES = {"MIT-compatible", "CC-BY-SA-4.0"}
+LICENSES = {"MIT-compatible", "CC-BY-SA-4.0", "Apache-2.0"}
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 

@@ -15,11 +15,17 @@
           "lane": { "enum": ["style", "rhetorical", "construction"] },
           "unit": { "enum": ["span", "sentence", "paragraph", "piece"] },
           "quote": { "type": "string" },
-          "fix": { "type": "string" }
+          "fix": { "type": "string" },
+          "say": { "type": "string" },
+          "pattern": { "type": "string" }
         }
       }
     },
     "style_summary": { "type": ["string", "null"] },
+    "lean": { "enum": ["slop", "human", "mixed", "unclear"] },
+    "why_slop": { "type": "array" },
+    "why_human": { "type": "array" },
+    "sentences": { "type": "array" },
     "resemblance": {
       "type": ["object", "null"],
       "properties": {

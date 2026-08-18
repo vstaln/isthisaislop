@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ YAML_NAMES = (
     "patterns.core.yaml",
     "patterns.wikipedia.yaml",
     "patterns.rhetorical.yaml",
+    "patterns.slop.yaml",
 )
 
 
@@ -73,6 +75,7 @@ def _load_yaml_list(path: Path) -> list[dict[str, Any]]:
     return data
 
 
+@lru_cache(maxsize=4)
 def load_ontology(ontology_dir: Path | None = None) -> Ontology:
     ontology_dir = Path(ontology_dir) if ontology_dir else default_ontology_dir()
     validator = Draft202012Validator(_schema(ontology_dir))
