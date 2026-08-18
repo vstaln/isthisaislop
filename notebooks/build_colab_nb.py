@@ -10,23 +10,20 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "notebooks" / "SlopDetector_Colab.ipynb"
 
 EMBED_PATHS = [
-    "pyproject.toml",
+    "src/slopdet/__init__.py",
+    "src/slopdet/calibrate.py",
+    "src/slopdet/span.py",
+    "src/slopdet/construction.py",
+    "src/slopdet/ontology.py",
+    "src/slopdet/weaklabel.py",
+    "src/slopdet/report.py",
+    "src/slopdet/scorer.py",
+    "src/slopdet/explain.py",
     "ontology/schema.json",
     "ontology/patterns.core.yaml",
     "ontology/patterns.wikipedia.yaml",
     "ontology/patterns.rhetorical.yaml",
-    "src/slopdet/__init__.py",
-    "src/slopdet/ontology.py",
-    "src/slopdet/weaklabel.py",
-    "src/slopdet/construction.py",
-    "src/slopdet/report.py",
-    "src/slopdet/verify.py",
-    "src/slopdet/calibrate.py",
-    "src/slopdet/cli.py",
-    "src/slopdet/teacher.py",
-    "src/slopdet/student.py",
-    "src/slopdet/heads.py",
-    "src/slopdet/jlens.py",
+    "ontology/patterns.slop.yaml",
     "notebooks/colab_pipeline.py",
 ]
 
@@ -49,33 +46,38 @@ def main() -> None:
     cells = [
         nb_cell(
             "markdown",
-            """# Is This AI Slop? (ITAIS) — Colab Run All
+            """# Is This AI Slop? (ITAIS) — classify + why
 
-**Runtime → Change runtime type → T4 GPU** (CPU works for smoke). Then **Runtime → Run all**.
+**Runtime → Change runtime type → T4 GPU.** Then **Runtime → Run all.**
 
-Smoke trains a calibrated `matches_ai_pile` head on weak labels. It does not claim authorship.
-Gemma-3-4B residual distillation is optional (`FULL = True` + Hugging Face token with Gemma access).
-If Gemma fails, Qwen2.5-0.5B is the fallback. If there is no GPU, that cell prints `skipped` and the demo still runs.
+Trains one local model that does both jobs:
+
+1. **Classify** the text: slop or not slop.
+2. **Why:** which sentences, plus named patterns (`leverage`, `here's the thing`, …) with a short fix.
+
+Do not rent a GPU. A free Colab T4 is enough (~20–40 min, 1 epoch, `roberta-base` 125M).
+
+Data: coai (arxiv abstracts vs claude-haiku-4.5 / gemini-3-flash / gpt-oss-120b / gpt-5-nano paraphrases), stitched so the model sees mixed documents and learns *which span* is which.
+
+Exports `artifacts/roberta-span/` onto Google Drive `MyDrive/isthisaislop/`.
 """,
         ),
         nb_cell(
             "code",
             """# Config
-SMOKE = True          # False = more HC3 rows + try Gemma
-FULL = False          # True requires HF_TOKEN with Gemma license accepted
+EPOCHS = 1
+MAX_LEN = 256
 MOUNT_DRIVE = True
-N_DOCS = 400 if SMOKE else 4000
 
 import os, sys
 from pathlib import Path
 
 try:
-    from google.colab import drive, userdata
+    from google.colab import drive
     IN_COLAB = True
 except ImportError:
     IN_COLAB = False
     drive = None
-    userdata = None
 
 if IN_COLAB and MOUNT_DRIVE:
     try:
@@ -95,21 +97,15 @@ ROOT.mkdir(parents=True, exist_ok=True)
 os.chdir(ROOT)
 print("ROOT", ROOT)
 
-if IN_COLAB:
-    try:
-        tok = userdata.get("HF_TOKEN")
-        if tok:
-            os.environ["HF_TOKEN"] = tok
-            print("HF_TOKEN loaded from Colab secrets")
-    except Exception:
-        pass
-if FULL:
-    os.environ["FULL"] = "1"
+import torch
+if torch.cuda.is_available():
+    print("GPU", torch.cuda.get_device_name(0))
+else:
+    raise SystemExit("No GPU. Runtime → Change runtime type → T4 GPU → Save → Run all.")
 
-import subprocess, sys
-pkgs = ["pyyaml", "regex", "jsonschema", "scikit-learn", "datasets", "numpy>=1.26"]
-if IN_COLAB:
-    pkgs += ["transformers", "accelerate", "bitsandbytes", "safetensors"]
+import subprocess
+pkgs = ["pyyaml", "regex", "jsonschema", "scikit-learn", "numpy>=1.26", "pandas", "pyarrow"]
+pkgs += ["transformers", "accelerate", "safetensors"]
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *pkgs])
 print("deps ok")
 """,
@@ -132,23 +128,16 @@ print("ITAIS ready")
         ),
         nb_cell(
             "code",
-            """# Train smoke detector (seed + HC3 if downloadable)
+            """# Train: classify + mark which sentences. Demo prints named why on each span.
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path("src").resolve()))
 sys.path.insert(0, str(Path("notebooks").resolve()))
-from colab_pipeline import build_and_train, demo, try_gpu_distill
+from colab_pipeline import train_span_roberta, demo_span
 
-state = build_and_train(Path(".").resolve(), n_docs=N_DOCS)
-demo(state)
-""",
-        ),
-        nb_cell(
-            "code",
-            """# Optional GPU distill (skipped automatically on CPU / failed teacher load)
-from pathlib import Path
-try_gpu_distill(Path(".").resolve(), state["docs"], max_docs=32 if SMOKE else 256)
-print("done")
+info = train_span_roberta(Path(".").resolve(), epochs=EPOCHS, max_len=MAX_LEN)
+demo_span(Path(".").resolve(), info)
+print("done — bundle at", Path("artifacts/roberta-span").resolve())
 """,
         ),
     ]

@@ -141,7 +141,7 @@ WIKI_HEADER = """\
 # https://creativecommons.org/licenses/by-sa/4.0/
 #
 # Share-alike applies to the descriptive text (fix blurbs) in this file.
-# Regex strings are functional. Do not paste these descriptions into Apache-2.0 source.
+# Regex strings are functional. Do not paste these descriptions into MIT source.
 #
 """
 

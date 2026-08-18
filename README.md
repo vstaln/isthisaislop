@@ -2,21 +2,32 @@
 
 **ITAIS** for short. GitHub: [`isthisaislop`](https://github.com/vstaln/isthisaislop).
 
-Local checkable-hit detector for AI-style prose, plus a separate `matches_ai_pile` resemblance score. Never an authorship claim.
+Local detector you can run on selected text: named slop patterns, named human-style cues, per-sentence lean, plus a separate `matches_ai_pile` resemblance score. Never an authorship claim.
 
 Python import stays `slopdet`. CLI: `itais` or `slopdet`.
 
-## Colab (this is the training path)
+```bash
+uv run itais "Here's the thing, we leverage robust pipelines."
+uv run itais --json "Thursday mornings at the clinic were empty."
+```
+
+`why_slop` quotes the span and names the pattern. `why_human` quotes anchors (a weekday, a number, a contraction). `lean` is `slop`, `human`, `mixed`, or `unclear` from the sentences — not "written by ChatGPT."
+
+## Colab (neural span model)
 
 1. Open `notebooks/SlopDetector_Colab.ipynb` in [Google Colab](https://colab.research.google.com/).
-2. Runtime → Change runtime type → **T4 GPU** (CPU also works for the smoke path).
+2. Runtime → Change runtime type → **T4 GPU**.
 3. Runtime → **Run all**.
 
-Smoke mode finishes on a free T4 without a Hugging Face token. It trains a calibrated `matches_ai_pile` head on weak labels + construction stats, then demos hits on sample text.
+Trains `roberta-base` as a token classifier on stitched coai sentences (arxiv abstracts vs current-gen LLM paraphrases). Exports `artifacts/roberta-span/`. About 20–40 min on a free T4.
 
-Optional: add a Colab secret named `HF_TOKEN` (Hugging Face, with Gemma access) and set `FULL = True` in the config cell to cache Gemma-3-4B residuals. If Gemma is gated or OOMs, the notebook falls back to `Qwen/Qwen2.5-0.5B-Instruct`.
+coai is **academic paraphrase**, not blog/email slop. The regex ontology is what names "here's the thing" / "leverage" / em-dashes on ordinary prose. Use both.
 
-Outputs go to Google Drive `MyDrive/isthisaislop/` when Drive is mounted, otherwise `/content/isthisaislop/`.
+CPU scorer (no GPU):
+
+```bash
+uv run python scripts/train_cpu_scorer.py
+```
 
 ## Two lanes
 
@@ -25,4 +36,4 @@ Outputs go to Google Drive `MyDrive/isthisaislop/` when Drive is mounted, otherw
 
 ## License
 
-Apache-2.0 for code. Wikipedia-derived pattern blurbs are isolated in `ontology/patterns.wikipedia.yaml` (CC BY-SA 4.0).
+MIT for code. Wikipedia-derived pattern blurbs are isolated in `ontology/patterns.wikipedia.yaml` (CC BY-SA 4.0). Anti-slop phrases in `ontology/patterns.slop.yaml` are Apache-2.0 (sam-paech/antislop-sampler).
