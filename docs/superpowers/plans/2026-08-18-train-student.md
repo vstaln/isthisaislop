@@ -1,3 +1,6 @@
+> **SUPERSEDED 2026-08-18 by `docs/HANDOFF.md` rev 2.** Kept for history: the roberta-base
+> doc-classifier plan and its coai-only gate are no longer the plan. Do not build from this file.
+
 # Implementation Plan: ITAIS v1 — a ZeroGPT-class scorer you can run anywhere
 
 > **Date:** 2026-08-18

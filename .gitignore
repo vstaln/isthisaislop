@@ -24,7 +24,8 @@ build/
 .idea/
 .vscode/
 
-# Secrets
+# Secrets (names-only template is tracked)
 .env
 .env.*
+!.env.example
 credentials.json
