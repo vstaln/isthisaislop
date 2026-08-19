@@ -19,12 +19,14 @@ EMBED_PATHS = [
     "src/slopdet/report.py",
     "src/slopdet/scorer.py",
     "src/slopdet/explain.py",
+    "src/slopdet/labels.py",
+    "src/slopdet/lfm.py",
     "ontology/schema.json",
     "ontology/patterns.core.yaml",
     "ontology/patterns.wikipedia.yaml",
     "ontology/patterns.rhetorical.yaml",
     "ontology/patterns.slop.yaml",
-    "notebooks/colab_pipeline.py",
+    "scripts/fine_tune_lfm.py",
 ]
 
 
@@ -46,27 +48,30 @@ def main() -> None:
     cells = [
         nb_cell(
             "markdown",
-            """# Is This AI Slop? (ITAIS) — classify + why
+            """# Is This AI Slop? (ITAIS) — train the LFM2.5 encoder
 
-**Runtime → Change runtime type → T4 GPU.** Then **Runtime → Run all.**
+**Runtime → Change runtime type → T4 GPU.** Then **Runtime → Run all**.
 
-Trains one local model that does both jobs:
+Trains one model that does both jobs:
 
 1. **Classify** the text: slop or not slop.
-2. **Why:** which sentences, plus named patterns (`leverage`, `here's the thing`, …) with a short fix.
+2. **Why:** which sentences + spans, with named patterns.
 
-Do not rent a GPU. A free Colab T4 is enough (~20–40 min, 1 epoch, `roberta-base` 125M).
+Base: `LiquidAI/LFM2.5-Encoder-350M` (bidirectional masked-LM encoder, ~354M params),
+fine-tuned 1 epoch on the 122k-doc mixed corpus (coai / storyscope / gutenberg / blogs / scp).
+fp16 on T4; NaN preflight aborts loudly rather than silently producing garbage.
 
-Data: coai (arxiv abstracts vs claude-haiku-4.5 / gemini-3-flash / gpt-oss-120b / gpt-5-nano paraphrases), stitched so the model sees mixed documents and learns *which span* is which.
-
-Exports `artifacts/roberta-span/` onto Google Drive `MyDrive/isthisaislop/`.
+Exports `artifacts/lfm/` onto Google Drive `MyDrive/isthisaislop/`.
 """,
         ),
         nb_cell(
             "code",
             """# Config
 EPOCHS = 1
-MAX_LEN = 256
+MAX_LEN = 512
+MODEL = "LiquidAI/LFM2.5-Encoder-350M"
+DATA_PARQUET = "train_all.parquet"   # name of the training parquet (Drive or upload)
+DRIVE_PATH = "isthisaislop"          # folder under MyDrive
 MOUNT_DRIVE = True
 
 import os, sys
@@ -82,7 +87,7 @@ except ImportError:
 if IN_COLAB and MOUNT_DRIVE:
     try:
         drive.mount("/content/drive")
-        ROOT = Path("/content/drive/MyDrive/isthisaislop")
+        ROOT = Path("/content/drive/MyDrive") / DRIVE_PATH
     except Exception as exc:
         print("Drive mount failed, using /content:", exc)
         ROOT = Path("/content/isthisaislop")
@@ -128,16 +133,46 @@ print("ITAIS ready")
         ),
         nb_cell(
             "code",
-            """# Train: classify + mark which sentences. Demo prints named why on each span.
+            """# Locate the training parquet: Drive → /content → manual upload
 from pathlib import Path
-import sys
-sys.path.insert(0, str(Path("src").resolve()))
-sys.path.insert(0, str(Path("notebooks").resolve()))
-from colab_pipeline import train_span_roberta, demo_span
 
-info = train_span_roberta(Path(".").resolve(), epochs=EPOCHS, max_len=MAX_LEN)
-demo_span(Path(".").resolve(), info)
-print("done — bundle at", Path("artifacts/roberta-span").resolve())
+DATA_PARQUET = "train_all.parquet"
+candidates = [
+    Path(".") / DATA_PARQUET,                     # already in ROOT
+    Path("/content") / DATA_PARQUET,              # uploaded to /content
+    Path("/content/drive/MyDrive/isthisaislop") / DATA_PARQUET,
+]
+src = next((p for p in candidates if p.exists()), None)
+if src is None:
+    raise SystemExit(
+        f"train_all.parquet not found. Upload it to Drive {DRIVE_PATH}/ or /content/, "
+        f"or re-run the build locally and copy it."
+    )
+if src.resolve() != (Path(".") / DATA_PARQUET).resolve():
+    import shutil
+    shutil.copy(src, Path(".") / DATA_PARQUET)
+    print(f"copied {src} → ./{DATA_PARQUET}")
+else:
+    print(f"using ./{DATA_PARQUET}")
+""",
+        ),
+        nb_cell(
+            "code",
+            """# Train: LFM2.5-Encoder-350M, 1 epoch, fp16, checkpoints to Drive
+import sys, subprocess
+from pathlib import Path
+
+cmd = [
+    sys.executable, "scripts/fine_tune_lfm.py",
+    "--arch", "encoder",
+    "--model", MODEL,
+    "--spans-parquet", DATA_PARQUET,
+    "--max-len", str(MAX_LEN),
+    "--epochs", str(EPOCHS),
+    "--out", "artifacts/lfm",
+]
+print("running:", " ".join(cmd))
+sys.exit(subprocess.call(cmd))
 """,
         ),
     ]
