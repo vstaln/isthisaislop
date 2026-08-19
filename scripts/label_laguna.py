@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +134,13 @@ def local_hits(text: str, onto) -> list[dict]:
     return hits
 
 
+def _backoff(attempt: int, retries: int) -> None:
+    """Jittered exponential backoff capped at ~60s. attempt is 0-based."""
+    base = min(45, 10 + attempt * 10)
+    jitter = random.uniform(0.5, 1.5)
+    time.sleep(base * jitter)
+
+
 def laguna(env: dict[str, str], text: str, retries: int = 12) -> dict:
     payload = {
         "model": env["MODEL"],
@@ -179,7 +188,7 @@ def laguna(env: dict[str, str], text: str, retries: int = 12) -> dict:
             )
         except subprocess.TimeoutExpired:
             print(f"    laguna timeout attempt {attempt + 1}/{retries}", flush=True)
-            time.sleep(min(45, 10 + attempt * 10))
+            _backoff(attempt, retries)
             continue
         code = proc.stdout.strip()
         try:
@@ -218,7 +227,7 @@ def laguna(env: dict[str, str], text: str, retries: int = 12) -> dict:
                     time.sleep(3)
                     continue
                 print(f"    laguna {code} empty_json attempt {attempt + 1}/{retries}", flush=True)
-                time.sleep(min(45, 10 + attempt * 10))
+                _backoff(attempt, retries)
                 continue
             try:
                 parsed = json.loads(raw[start : end + 1])
@@ -239,7 +248,7 @@ def laguna(env: dict[str, str], text: str, retries: int = 12) -> dict:
                     time.sleep(3)
                     continue
                 print(f"    laguna {code} bad_json attempt {attempt + 1}/{retries}", flush=True)
-                time.sleep(min(45, 10 + attempt * 10))
+                _backoff(attempt, retries)
                 continue
             parsed = hydrate_lanes(parsed)
             if not parsed["style"] and not parsed["construction"] and nudges < 2:
@@ -262,7 +271,7 @@ def laguna(env: dict[str, str], text: str, retries: int = 12) -> dict:
             return parsed
         err = (data.get("error") or {}).get("type") or (data.get("error") or {}).get("message") or code
         print(f"    laguna {code} {err} attempt {attempt + 1}/{retries}", flush=True)
-        time.sleep(min(45, 10 + attempt * 10))
+        _backoff(attempt, retries)
     raise RuntimeError(f"laguna failed: {last[0]} {last[1]}")
 
 
@@ -330,64 +339,72 @@ def verbatim(doc_text: str, hits: list[dict]) -> list[dict]:
     return [h for h in hits if h.get("quote") and h["quote"] in doc_text]
 
 
+def process_doc(env: dict, onto, doc: dict) -> dict:
+    """Label one doc. Returns the record to append (no file I/O here)."""
+    try:
+        named = local_hits(doc["text"], onto)
+        llm = laguna(env, doc["text"])
+        llm["style"] = verbatim(doc["text"], llm.get("style") or [])
+        llm["construction"] = verbatim(doc["text"], llm.get("construction") or [])
+        return {
+            "id": doc["id"],
+            "pile": doc["pile"],
+            "model": doc["model"],
+            "source": doc["source"],
+            "text": doc["text"],
+            "local_style_hits": named,
+            "construction_stats": construction_stats(doc["text"]),
+            "local": explain(doc["text"]),
+            "laguna": llm,
+            "labeler": env["MODEL"],
+        }
+    except Exception as exc:  # noqa: BLE001 — keep going, log the miss
+        return {
+            "id": doc["id"],
+            "pile": doc["pile"],
+            "model": doc["model"],
+            "source": doc["source"],
+            "text": doc["text"],
+            "local_style_hits": local_hits(doc["text"], onto),
+            "construction_stats": construction_stats(doc["text"]),
+            "laguna": None,
+            "laguna_error": type(exc).__name__,
+            "labeler": env["MODEL"],
+        }
+
+
 def main() -> None:
     n_per = int(sys.argv[1]) if len(sys.argv) > 1 else 20
     pile = int(sys.argv[2]) if len(sys.argv) > 2 else None
     seed = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    workers = int(sys.argv[4]) if len(sys.argv) > 4 else 5
     env = load_env()
     onto = load_ontology()
     OUT.parent.mkdir(parents=True, exist_ok=True)
     seen = already_done(OUT)
     docs = seed_docs() + sample_coai(n_per, pile, seed)
     todo = [d for d in docs if d["id"] not in seen]
-    print(f"todo {len(todo)} already {len(seen)} out {OUT} model={env['MODEL']} base={env['BASE']}", flush=True)
+    print(f"todo {len(todo)} already {len(seen)} out {OUT} model={env['MODEL']} base={env['BASE']} workers={workers}", flush=True)
     ok = fail = 0
-    with OUT.open("a", encoding="utf-8") as fh:
-        for i, doc in enumerate(todo, 1):
-            print(f"[{i}/{len(todo)}] pile={doc['pile']} {doc['source']} {doc['model']}", flush=True)
-            try:
-                named = local_hits(doc["text"], onto)
-                llm = laguna(env, doc["text"])
-                llm["style"] = verbatim(doc["text"], llm.get("style") or [])
-                llm["construction"] = verbatim(doc["text"], llm.get("construction") or [])
-                rec = {
-                    "id": doc["id"],
-                    "pile": doc["pile"],
-                    "model": doc["model"],
-                    "source": doc["source"],
-                    "text": doc["text"],
-                    "local_style_hits": named,
-                    "construction_stats": construction_stats(doc["text"]),
-                    "local": explain(doc["text"]),
-                    "laguna": llm,
-                    "labeler": env["MODEL"],
-                }
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(process_doc, env, onto, doc): doc for doc in todo}
+        for i, fut in enumerate(as_completed(futures), 1):
+            doc = futures[fut]
+            rec = fut.result()
+            with OUT.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fh.flush()
+            if rec.get("laguna") is not None:
                 ok += 1
+                llm = rec["laguna"]
                 print(
-                    f"    lean={llm.get('lean')} style={len(llm.get('style') or [])} "
-                    f"construction={len(llm.get('construction') or [])} local={len(named)}",
+                    f"[{i}/{len(todo)}] pile={doc['pile']} {doc['source']} {doc['model']} "
+                    f"lean={llm.get('lean')} style={len(llm.get('style') or [])} "
+                    f"construction={len(llm.get('construction') or [])} local={len(rec.get('local_style_hits') or [])}",
                     flush=True,
                 )
-                time.sleep(2)
-            except Exception as exc:  # noqa: BLE001 — keep going, log the miss
+            else:
                 fail += 1
-                rec = {
-                    "id": doc["id"],
-                    "pile": doc["pile"],
-                    "model": doc["model"],
-                    "source": doc["source"],
-                    "text": doc["text"],
-                    "local_style_hits": local_hits(doc["text"], onto),
-                    "construction_stats": construction_stats(doc["text"]),
-                    "laguna": None,
-                    "laguna_error": type(exc).__name__,
-                    "labeler": env["MODEL"],
-                }
-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fh.flush()
-                print(f"    FAIL {type(exc).__name__}", flush=True)
+                print(f"[{i}/{len(todo)}] pile={doc['pile']} {doc['source']} {doc['model']} FAIL {rec.get('laguna_error')}", flush=True)
     print(f"done ok={ok} fail={fail} file={OUT}", flush=True)
 
 

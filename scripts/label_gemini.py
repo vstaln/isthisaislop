@@ -62,6 +62,41 @@ def load_env() -> dict[str, str]:
     return raw
 
 
+def _extract_json(raw: str) -> dict | list:
+    """Pull the first JSON object/array out of a model reply (fences/prose tolerated)."""
+    raw = raw.strip()
+    if "</think>" in raw:
+        raw = raw.split("</think>", 1)[-1]
+    start = min(
+        [i for i in (raw.find("{"), raw.find("[")) if i >= 0] or [-1]
+    )
+    end = max(raw.rfind("}"), raw.rfind("]"))
+    if start < 0 or end <= start:
+        raise ValueError("no JSON in answer")
+    return json.loads(raw[start : end + 1])
+
+
+def _parse_verdict(data: dict, text: str) -> dict:
+    """Turn a raw API response into a hydrated, verbatim-filtered verdict."""
+    cand = data["candidates"][0]
+    parts = [p for p in cand["content"]["parts"] if not p.get("thought")]
+    raw = parts[-1].get("text", "") if parts else ""
+    if not raw:
+        raise ValueError("empty answer")
+    parsed = _extract_json(raw)
+    if isinstance(parsed, list):
+        raise ValueError("unexpected array reply (single-doc call)")
+    parsed = hydrate_lanes(parsed)
+    parsed["style"] = verbatim(text, parsed.get("style") or [])
+    parsed["construction"] = verbatim(text, parsed.get("construction") or [])
+    parsed["_usage"] = {
+        "input": (data.get("usageMetadata") or {}).get("promptTokenCount", 0),
+        "output": (data.get("usageMetadata") or {}).get("candidatesTokenCount", 0),
+        "thoughts": (data.get("usageMetadata") or {}).get("thoughtsTokenCount", 0),
+    }
+    return parsed
+
+
 def call_gemini(model: str, api_key: str, text: str, retries: int = 8) -> dict:
     """Label one doc. Returns hydrate_lanes() output + _usage tokens."""
     payload = {
@@ -92,43 +127,90 @@ def call_gemini(model: str, api_key: str, text: str, retries: int = 8) -> dict:
             time.sleep(min(60, 10 + attempt * 10))
             continue
         try:
-            cand = data["candidates"][0]
-        except (KeyError, IndexError):
+            return _parse_verdict(data, text)
+        except (KeyError, IndexError) as e:
             last = f"no candidates: {str(data)[:200]}"
             time.sleep(10)
             continue
-        # Reasoning model: part with thought=True is the chain; answer is the
-        # last non-thought part.
-        parts = [p for p in cand["content"]["parts"] if not p.get("thought")]
-        raw = parts[-1].get("text", "") if parts else ""
-        if not raw:
-            last = "empty answer"
+        except (ValueError, json.JSONDecodeError) as e:
+            last = str(e)
             time.sleep(5)
             continue
-        if "</think>" in raw:
-            raw = raw.split("</think>", 1)[-1]
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end <= start:
-            last = "no JSON in answer"
+    raise RuntimeError(f"gemini failed after {retries} tries: {last}")
+
+
+BATCH_SYS = SYS + """
+
+When given MULTIPLE texts (separated by a blank line and a line like
+`--- DOC 2 ---`), return a JSON ARRAY with ONE object per doc, in the same
+order. Each object matches the single-doc schema above. If a doc has no
+tags, its style/construction are []. Do NOT skip docs and do NOT reorder.
+"""
+
+
+def call_gemini_batch(model: str, api_key: str, texts: list[str], retries: int = 8) -> list[dict]:
+    """Label N docs in one call. Returns list of hydrated verdicts (same order)."""
+    blocks = [f"--- DOC {i + 1} ---\n{t[:6000]}" for i, t in enumerate(texts)]
+    prompt = BATCH_SYS + "\n\n" + "\n\n".join(blocks)
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 8192},
+    }
+    url = API.format(model=model) + "?key=" + api_key
+    body = json.dumps(payload).encode()
+    last = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=300) as r:
+                data = json.load(r)
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+            if e.code in (429, 500, 502, 503):
+                time.sleep(min(60, 10 + attempt * 10))
+                continue
             time.sleep(5)
+            continue
+        except (urllib.error.URLError, TimeoutError) as e:
+            last = str(e)
+            time.sleep(min(60, 10 + attempt * 10))
             continue
         try:
-            parsed = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            last = "bad JSON"
+            cand = data["candidates"][0]
+            parts = [p for p in cand["content"]["parts"] if not p.get("thought")]
+            raw = parts[-1].get("text", "") if parts else ""
+            if not raw:
+                raise ValueError("empty answer")
+            arr = _extract_json(raw)
+            if not isinstance(arr, list):
+                raise ValueError("expected array reply")
+            if len(arr) != len(texts):
+                raise ValueError(f"array len {len(arr)} != docs {len(texts)}")
+            out = []
+            for t, el in zip(texts, arr):
+                el = hydrate_lanes(el)
+                el["style"] = verbatim(t, el.get("style") or [])
+                el["construction"] = verbatim(t, el.get("construction") or [])
+                out.append(el)
+            usage = (data.get("usageMetadata") or {})
+            for v in out:
+                v["_usage"] = {
+                    "input": usage.get("promptTokenCount", 0) // len(texts),
+                    "output": usage.get("candidatesTokenCount", 0) // len(texts),
+                    "thoughts": usage.get("thoughtsTokenCount", 0) // len(texts),
+                }
+            return out
+        except (KeyError, IndexError) as e:
+            last = f"no candidates: {str(data)[:200]}"
+            time.sleep(10)
+            continue
+        except (ValueError, json.JSONDecodeError) as e:
+            last = str(e)
             time.sleep(5)
             continue
-        parsed = hydrate_lanes(parsed)
-        # Fabricated quotes die here, same as the laguna lane.
-        parsed["style"] = verbatim(text, parsed.get("style") or [])
-        parsed["construction"] = verbatim(text, parsed.get("construction") or [])
-        parsed["_usage"] = {
-            "input": (data.get("usageMetadata") or {}).get("promptTokenCount", 0),
-            "output": (data.get("usageMetadata") or {}).get("candidatesTokenCount", 0),
-            "thoughts": (data.get("usageMetadata") or {}).get("thoughtsTokenCount", 0),
-        }
-        return parsed
-    raise RuntimeError(f"gemini failed after {retries} tries: {last}")
+    raise RuntimeError(f"gemini batch failed after {retries} tries: {last}")
 
 
 # ---------------------------------------------------------------- corpora
@@ -264,6 +346,7 @@ def main() -> None:
     ap.add_argument("--model", default=MODEL_DEFAULT)
     ap.add_argument("--out", type=Path, default=ROOT / "eval" / "labels" / "gemma.jsonl")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--batch", type=int, default=0, help="N docs per call (0 = 1-doc calls)")
     ap.add_argument("--seed", type=int, default=1)
     args = ap.parse_args()
 
@@ -305,14 +388,19 @@ def main() -> None:
     t0 = time.time()
 
     def worker(row: dict) -> None:
-        nonlocal done_count
+        """1-doc path: call, record, or log failure."""
         try:
             verdict = call_gemini(args.model, api_key, row["text"])
         except RuntimeError as e:
             with lock:
                 failures.append((row["id"], str(e)))
             return
-        record = {
+        record_verdict(row, verdict)
+
+    def record_verdict(row: dict, verdict: dict) -> None:
+        """Append a single doc's record (shared by 1-doc and batch paths)."""
+        nonlocal done_count
+        rec = {
             "id": row["id"],
             "pile": row["pile"],
             "model": row["model"],
@@ -327,7 +415,7 @@ def main() -> None:
         }
         with lock:
             with args.out.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             u = verdict.get("_usage") or {}
             usage["input"] += u.get("input", 0)
             usage["output"] += u.get("output", 0)
@@ -342,10 +430,29 @@ def main() -> None:
                     flush=True,
                 )
 
-    with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = [ex.submit(worker, r) for r in todo]
-        for f in as_completed(futs):
-            f.result()
+    def worker_batch(rows: list[dict]) -> None:
+        """Label a batch of rows in one call; fall back to 1-doc calls on failure."""
+        try:
+            verdicts = call_gemini_batch(args.model, api_key, [r["text"] for r in rows])
+        except RuntimeError:
+            # Batch failed: fall back to individual calls for each doc.
+            for r in rows:
+                worker(r)
+            return
+        for r, v in zip(rows, verdicts):
+            record_verdict(r, v)
+
+    if args.batch > 1:
+        batches = [todo[i : i + args.batch] for i in range(0, len(todo), args.batch)]
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
+            futs = [ex.submit(worker_batch, b) for b in batches]
+            for f in as_completed(futs):
+                f.result()
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futs = [ex.submit(worker, r) for r in todo]
+            for f in as_completed(futs):
+                f.result()
 
     print(
         f"done {done_count}/{len(todo)} | failures {len(failures)} "
