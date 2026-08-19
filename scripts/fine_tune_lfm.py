@@ -91,14 +91,24 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
         df = pd.read_parquet(spans_parquet)
         rows = []
         for rec in df.to_dict("records"):
-            spans = rec.get("spans") or []
-            if isinstance(spans, str):
+            spans = rec.get("spans")
+            if spans is None or (isinstance(spans, (list, tuple)) and len(spans) == 0):
+                spans = []
+            elif isinstance(spans, str):
                 spans = json.loads(spans)
+            if isinstance(spans, (list, tuple)):
+                spans = [s for s in spans if isinstance(s, dict) and s.get("lane")]
+            else:
+                # numpy array or other — coerce safely
+                try:
+                    spans = [s for s in spans if isinstance(s, dict) and s.get("lane")]
+                except TypeError:
+                    spans = []
             rows.append({
                 "text": rec["text"],
                 "label": int(rec.get("label", DOC_LABELS.get(str(rec.get("pile", "human")), 0))),
                 "register": rec.get("register", "coai"),
-                "spans": [s for s in spans if s.get("lane")],
+                "spans": spans,
             })
         return rows
 
