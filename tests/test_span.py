@@ -30,3 +30,35 @@ def test_calibration_docs_are_pure_source_not_stitched():
     assert all("sentences" in d for d in human + ai)
     assert all({lab for _, _, lab in d["sentences"]} == {0} for d in human)
     assert all({lab for _, _, lab in d["sentences"]} == {1} for d in ai)
+
+
+def test_span_offsets_match_quotes():
+    """Span start/end must slice the source text back to the quote verbatim."""
+    import json
+
+    import pandas as pd
+
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from build_training_parquet import load_spans
+
+    parts = sorted(Path("/tmp/label_artem9k").glob("part_*.parquet"))
+    if not parts:
+        return  # labeling not running; skip silently
+    merged = pd.concat(pd.read_parquet(p) for p in parts[:3]).reset_index(drop=True)
+    merged = merged[["id", "text", "label", "pile", "spans", "slop_tags", "human_tags"]]
+    test_path = Path("/tmp/test_artem9k_offsets.parquet")
+    merged.to_parquet(test_path)
+    df = load_spans(test_path, "pile")
+    bad = 0
+    checked = 0
+    for rec in df.to_dict("records"):
+        txt = rec["text"]
+        for s in rec["spans"]:
+            checked += 1
+            if not (0 <= s["start"] < s["end"] <= len(txt)):
+                bad += 1
+    assert bad == 0, f"{bad}/{checked} spans out of bounds"
+    assert checked > 0
