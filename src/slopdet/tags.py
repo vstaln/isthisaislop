@@ -138,12 +138,12 @@ _PREFIX = (
 
 COPY: dict[str, dict[str, str]] = {
     "glue": {"lean": "slop", "lane": "style", "say": "Stock verb. Name the action."},
-    "frames": {"lean": "slop", "lane": "style", "say": "Canned frame. Start on the fact."},
+    "frames": {"lean": "human", "lane": "style", "say": "Discourse frame — a human academic habit (in this article, in essence)."},
     "emdash": {"lean": "slop", "lane": "style", "say": "Em-dash cluster. Use a period or a comma."},
     "cliche": {"lean": "slop", "lane": "style", "say": "Body cliche. Write the actual beat."},
     "puffery": {"lean": "slop", "lane": "style", "say": "Cut the adjective, or name the property."},
     "opener": {"lean": "slop", "lane": "style", "say": "Cut the opener. Start on the point."},
-    "weasel": {"lean": "slop", "lane": "style", "say": "Name the source or cut the claim."},
+    "weasel": {"lean": "human", "lane": "style", "say": "Attributed claim, or source-less hedging that human writers use."},
     "colon": {"lean": "slop", "lane": "style", "say": "Rewrite as a plain sentence."},
     "insight": {"lean": "slop", "lane": "style", "say": "Drop the lone-expert setup."},
     "corporate": {"lean": "slop", "lane": "style", "say": "Say the work in ordinary words."},
@@ -157,7 +157,7 @@ COPY: dict[str, dict[str, str]] = {
     "hedge": {"lean": "slop", "lane": "style", "say": "Pick a side."},
     "bullets": {"lean": "slop", "lane": "style", "say": "Turn the list into sentences."},
     "transition": {"lean": "slop", "lane": "style", "say": "Let some paragraphs just stop."},
-    "passive": {"lean": "slop", "lane": "style", "say": "Write the actor and the verb."},
+    "passive": {"lean": "human", "lane": "style", "say": "Passive reporting is a human academic convention here."},
     "synonyms": {"lean": "slop", "lane": "style", "say": "Repeat the clear word."},
     "wiki": {"lean": "slop", "lane": "style", "say": "Drop the brochure. Name a fact."},
     "stack": {"lean": "slop", "lane": "style", "say": "Keep one modifier that earns its place."},
@@ -311,7 +311,7 @@ def pack_style(hit: dict[str, Any]) -> dict[str, Any]:
         "fix": text_say,
         "lane": hit.get("lane") or COPY.get(word, {}).get("lane", "style"),
         "unit": hit.get("unit", "span"),
-        "lean": "slop",
+        "lean": COPY.get(word, {}).get("lean", "slop"),
     }
     if "start" in hit:
         out["start"] = hit["start"]

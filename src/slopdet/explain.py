@@ -206,6 +206,9 @@ def _sentence_record(sentence: str, ontology: Ontology) -> dict[str, Any]:
     stats = construction_stats(sentence)
     why_human = _human_signals(sentence, stats)
     why_slop = [pack_style(h) for h in hits]
+    human_leaned = [h for h in why_slop if h.get("lean") == "human"]
+    why_slop = [h for h in why_slop if h.get("lean") != "human"]
+    why_human.extend(human_leaned)
     return {
         "text": sentence,
         "lean": _lean(why_slop, why_human),
@@ -222,8 +225,14 @@ def explain(
     slop_hits = _slop_hits(raw_hits)
     stats = construction_stats(text)
     why_slop = [pack_style(h) for h in slop_hits]
+    # A pattern's lean is authoritative: human-lean hits (weasel, frames,
+    # passive) vote human, not slop. Partition here so _lean() and the
+    # slop/human tag columns agree with the per-span lean.
+    human_leaned = [h for h in why_slop if h.get("lean") == "human"]
+    why_slop = [h for h in why_slop if h.get("lean") != "human"]
     why_slop.extend(_construction_slop(text, stats))
     why_human = _human_signals(text, stats)
+    why_human.extend(human_leaned)
     for hit in storyscope_hits(text):
         spec = COPY[hit["id"]]
         hit.setdefault("say", spec["say"])

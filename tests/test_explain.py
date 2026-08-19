@@ -5,8 +5,8 @@ from slopdet.report import FORBIDDEN_SUBSTRINGS
 
 
 SLOP = (
-    "Here's the thing, in today's competitive landscape we leverage robust "
-    "pipelines. In conclusion, experts agree it's a pivotal moment."
+    "Here's the thing, we leverage robust pipelines to streamline delivery. "
+    "In conclusion, the key point is that our stack empowers teams."
 )
 HUMAN = (
     "Thursday mornings at the clinic were empty. Half the early slots sat unused, "
