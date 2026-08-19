@@ -58,18 +58,30 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="+", type=Path)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--chunk", type=int, default=2000, help="docs per write; bounds RAM")
     ap.add_argument("--write", action="store_true", help="actually write; default is dry-run")
     args = ap.parse_args()
 
     for path in args.paths:
         df = pd.read_parquet(path)
-        print(f"{path.name}: {len(df)} docs", flush=True)
-        jobs = [(i, str(t)) for i, t in enumerate(df["text"])]
+        print(f"{path.name}: {len(df)} docs (chunk {args.chunk})", flush=True)
         t0 = time.time()
-        with Pool(args.workers) as pool:
-            rebuilt = list(pool.imap_unordered(label_row, jobs, chunksize=32))
-        rebuilt.sort(key=lambda r: r["idx"])
-        new = pd.DataFrame(rebuilt).set_index("idx")
+        n = len(df)
+        tmpdir = Path(f"/tmp/rebuild_{path.stem}")
+        tmpdir.mkdir(exist_ok=True)
+        for part, start in enumerate(range(0, n, args.chunk)):
+            end = min(start + args.chunk, n)
+            chunk_df = df.iloc[start:end]
+            jobs = [(i, str(t)) for i, t in enumerate(chunk_df["text"])]
+            with Pool(args.workers) as pool:
+                rebuilt = list(pool.imap_unordered(label_row, jobs, chunksize=32))
+            rebuilt.sort(key=lambda r: r["idx"])
+            frag = pd.DataFrame(rebuilt).set_index("idx")
+            frag.to_parquet(tmpdir / f"part_{part:04d}.parquet")
+            print(f"  chunk {start}-{end}/{n} done ({time.time()-t0:.0f}s)", flush=True)
+        new = pd.concat(
+            pd.read_parquet(p) for p in sorted(tmpdir.glob("part_*.parquet"))
+        )
         df["slop_tags"] = new["slop_tags"]
         df["human_tags"] = new["human_tags"]
         df["spans"] = new["spans"]
@@ -78,7 +90,6 @@ def main() -> None:
             print(f"  wrote {path.name} in {time.time()-t0:.0f}s", flush=True)
         else:
             # dry-run: report counts
-            import ast
             from collections import Counter
 
             mis = Counter()
