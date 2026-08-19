@@ -283,7 +283,21 @@ def main() -> int:
     use_amp = cfg.precision == "fp16" and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     doc_loss_fn = nn.CrossEntropyLoss()
-    token_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+    # K4 fix: class-balanced token loss. >99% of tokens are "no lane" (class 0),
+    # so an unweighted token CE collapses to "no lane everywhere". Weight each
+    # lane class inversely to its frequency so the head actually learns spans.
+    lane_ids = {lane: i + 1 for i, lane in enumerate(lanes)}  # 0 = no lane
+    token_weights = torch.ones(len(lanes) + 1, device=device)  # +1 for class 0
+    lane_counts = torch.zeros(len(lanes) + 1, device=device)
+    for r in rows:
+        for s in r["spans"]:
+            lid = lane_ids.get(s["lane"], 0)
+            lane_counts[lid] += max(0, (s["end"] - s["start"]))
+    total = lane_counts.sum().clamp(min=1)
+    # inverse-frequency, capped so rare lanes don't explode
+    token_weights[1:] = (total / lane_counts[1:].clamp(min=1)).clamp(max=50)
+    print(f"[data] token class weights: {token_weights.tolist()}", flush=True)
+    token_loss_fn = nn.CrossEntropyLoss(ignore_index=-100, weight=token_weights)
 
     total_steps = max(1, len(train_dl) // cfg.grad_accum) * cfg.epochs
     max_steps = 3 if args.smoke else total_steps * cfg.grad_accum

@@ -71,6 +71,10 @@ def main() -> None:
         ("data/training/spans_gutenberg_train.parquet", "gutenberg"),
         ("data/training/spans_blogs_train.parquet", "blogs"),
         ("data/training/spans_scp_train.parquet", "scp"),
+        # artem9k ai-text-detection-pile: real internet text, doc labels from
+        # source (human/ai); spans labeled by scripts/label_artem9k.py.
+        # register "pile" distinguishes real-world web text from curated corpora.
+        ("data/training/spans_artem9k_train.parquet", "pile"),
     ]
     frames = []
     for rel, register in corpora:
