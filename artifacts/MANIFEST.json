@@ -1,6 +1,6 @@
 {
   "revision": "handoff rev 2",
-  "git_sha": "d71c280280d9570c58385e1959ca69bdaa36eeb6",
+  "git_sha": "bca62b6",
   "date": "2026-08-18",
   "measured": {
     "tests": {
@@ -44,6 +44,14 @@
         "AutoModelForMaskedLM_embed_std": 0.1011,
         "note": "AutoModel reports every body tensor missing; guarded by slopdet.lfm.load_encoder_body"
       }
+    },
+    "cpu_scorer_floor": {
+      "command": "uv run python scripts/train_cpu_scorer.py --eval-only --report",
+      "data": "coai test (11022 docs)",
+      "auc": 0.8643,
+      "acc": 0.7675,
+      "threshold": 0.8917,
+      "date": "2026-08-19"
     }
   },
   "not_yet_recorded": {
