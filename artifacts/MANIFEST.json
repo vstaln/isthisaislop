@@ -1,0 +1,54 @@
+{
+  "revision": "handoff rev 2",
+  "git_sha": "d71c280280d9570c58385e1959ca69bdaa36eeb6",
+  "date": "2026-08-18",
+  "measured": {
+    "tests": {
+      "command": "python -m pytest -q",
+      "result": "31 passed"
+    },
+    "export_gate": {
+      "command": "uv run python scripts/export_onnx.py --probe",
+      "artifact": "artifacts/export_probe.json",
+      "result": {
+        "model": "LiquidAI/LFM2.5-Encoder-230M",
+        "exporter": "torchscript",
+        "params_m": 229.7,
+        "threads": 4,
+        "untrained_heads": true,
+        "fp32": {
+          "size_mb": 919.2,
+          "doc_drift": 8.940696716308594e-08,
+          "token_drift": 3.230571746826172e-05,
+          "latency_ms_512": 564.0,
+          "latency_ms_1024": 1107.8
+        },
+        "int8": {
+          "size_mb": 230.4,
+          "doc_drift": 0.14675596356391907,
+          "token_drift": 2.7461607456207275,
+          "latency_ms_512": 371.1,
+          "latency_ms_1024": 742.9
+        }
+      },
+      "caveat": "latency is 4 cloud-vCPU threads, not a phone; INT8 drift measured with untrained heads"
+    },
+    "trainer_smoke": {
+      "command": "python scripts/fine_tune_lfm.py --arch encoder --smoke --precision fp32",
+      "result": "3 steps, 18 s, CPU, bundle + calibration + manifest written"
+    },
+    "encoder_loading_trap": {
+      "command": "AutoModel vs AutoModelForMaskedLM with output_loading_info=True",
+      "result": {
+        "AutoModel_embed_std": 0.02,
+        "AutoModelForMaskedLM_embed_std": 0.1011,
+        "note": "AutoModel reports every body tensor missing; guarded by slopdet.lfm.load_encoder_body"
+      }
+    }
+  },
+  "not_yet_recorded": {
+    "cpu_logistic_floor": "NEXT-1: coai-test AUROC of artifacts/sklearn_bundle.json",
+    "trained_model": "no neural model trained yet",
+    "on_device_latency": "B2: needs target phone"
+  }
+}
