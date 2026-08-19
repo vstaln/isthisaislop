@@ -62,7 +62,7 @@ def main() -> None:
     for rec in rows:
         if not rec.get("local"):
             rec["local"] = explain(rec["text"])
-        laguna = rec.get("laguna") or {}
+        laguna = rec.get("laguna") or rec.get("gemma") or {}
         stats = rec.get("construction_stats") or {}
         tags = local_tags(rec)
         row = {

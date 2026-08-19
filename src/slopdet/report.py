@@ -53,8 +53,24 @@ def render_hits(
                     f"Resembles the AI pile more than {pct:.0f}% of human reference texts."
                 ),
             }
-    blob = str(out)
+    # The guard applies to OUR copy (say/fix/summaries/resemblance/labels), never
+    # to verbatim user quotes: a span that literally quotes "AI-generated" from
+    # the user's own text is not a claim we make, and crashing the labeling
+    # pipeline on it would be a false positive (StoryScope fiction trips this).
+    # Scanned from the generated fields directly (not `str(dict)`, whose repr
+    # escaping breaks substring matching on multi-line quotes).
+    bits: list[str] = [str(out.get("status", "")), str(out.get("style_summary") or "")]
+    for hit in out["hits"]:
+        for key in ("id", "lane", "unit", "say", "fix"):
+            bits.append(str(hit.get(key, "")))
+    res = out.get("resemblance") or {}
+    bits += [str(res.get("label", "")), str(res.get("text", ""))]
+    blob = "\n".join(bits)
     for bad in FORBIDDEN_SUBSTRINGS:
         if bad in blob and "AI pile" not in bad:
-            raise ValueError(f"forbidden copy leaked: {bad!r}")
+            holder = next(
+                (k for k, v in out.items() if bad in str(v)),
+                "hits[].say/fix",
+            )
+            raise ValueError(f"forbidden copy leaked: {bad!r} (in {holder})")
     return out

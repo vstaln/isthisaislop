@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
-"""Label the full coai train slice (62k docs) with deterministic spans.
+"""Label a corpus with deterministic spans (one row per doc).
 
-One row per doc: pile target, lean, slop/human tag lists, verbatim spans.
-Multiprocessed; explain(sentences=False) skips the per-sentence pass.
+Columns: pile target, slop/human tag lists, verbatim spans. Multiprocessed;
+explain(sentences=False) skips the per-sentence pass.
+
+Corpora:
+  coai       data/coai_train.parquet (62k docs, label col)
+  storyscope data/raw/storyscope/stories_{split}.parquet (5 AI stories per prompt)
+  gutenberg  data/raw/gutenberg_fiction/train-*.parquet (human fiction chunks)
+  writingprompts data/raw/writingprompts/train-*.parquet (human short fiction)
+
+Usage:
+  uv run python scripts/label_coai_batch.py                     # coai (default)
+  uv run python scripts/label_coai_batch.py --corpus storyscope --split train
+  uv run python scripts/label_coai_batch.py --corpus gutenberg --limit 5000
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -52,24 +64,94 @@ def label_row(args: tuple) -> dict:
     }
 
 
+def corpus_rows(corpus: str, split: str, limit: int) -> tuple[pd.DataFrame, list[tuple]]:
+    if corpus == "coai":
+        df = pd.read_parquet(ROOT / "data" / "coai_train.parquet")
+        jobs = [(i, str(t), int(l)) for i, (t, l) in enumerate(zip(df["text"], df["label"]))]
+        return df, jobs
+    if corpus == "storyscope":
+        df = pd.read_parquet(ROOT / "data" / "raw" / "storyscope" / f"stories_{split}.parquet")
+        cols = [c for c in df.columns if c.startswith("story_")]
+        jobs = []
+        n = 0
+        for rec in df.itertuples(index=False):
+            for col in cols:
+                text = str(getattr(rec, col) or "").strip()
+                if not text:
+                    continue
+                jobs.append((n, text, 1))
+                n += 1
+                if limit and n >= limit:
+                    return df, jobs
+        return df, jobs
+    if corpus == "gutenberg":
+        paths = sorted((ROOT / "data" / "raw" / "gutenberg_fiction").glob("train-*.parquet"))
+        dfs = [pd.read_parquet(p) for p in paths]
+        df = dfs[0] if len(dfs) == 1 else pd.concat(dfs, ignore_index=True)
+        jobs = [(i, str(t), 0) for i, t in enumerate(df["text"].tolist())]
+        return df, jobs
+    if corpus == "writingprompts":
+        paths = sorted((ROOT / "data" / "raw" / "writingprompts").glob("train-*.parquet"))
+        dfs = [pd.read_parquet(p) for p in paths]
+        df = dfs[0] if len(dfs) == 1 else pd.concat(dfs, ignore_index=True)
+        jobs = [(i, str(t), 0) for i, t in enumerate(df["story"].tolist())]
+        return df, jobs
+    if corpus == "scp":
+        texts: list[str] = []
+        for p in sorted((ROOT / "data" / "raw" / "scp").glob("*_cleaned.jsonl")):
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                text = rec.get("text") or rec.get("story") or rec.get("content")
+                if text:
+                    texts.append(str(text))
+        jobs = [(i, t, 0) for i, t in enumerate(texts)]
+        return pd.DataFrame({"text": texts}), jobs
+    if corpus == "blogs":
+        import xml.etree.ElementTree as ET
+
+        texts = []
+        for f in sorted((ROOT / "data" / "raw" / "blogs").rglob("*.xml")):
+            try:
+                root = ET.parse(f).getroot()
+            except Exception:  # noqa: BLE001 - one bad file must not kill the corpus
+                continue
+            posts = [p.text or "" for p in root.iter("post")]
+            text = "\n\n".join(posts).strip()
+            if len(text) >= 200:  # skip near-empty blog files
+                texts.append(text)
+        jobs = [(i, t, 0) for i, t in enumerate(texts)]
+        return pd.DataFrame({"text": texts}), jobs
+    raise SystemExit(f"unknown corpus: {corpus}")
+
+
 def main() -> None:
-    df = pd.read_parquet(ROOT / "data" / "coai_train.parquet")
-    print(f"coai train: {len(df)} docs", flush=True)
-    jobs = [(i, str(text), int(label)) for i, (text, label) in enumerate(zip(df["text"], df["label"]))]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--corpus", default="coai", choices=["coai", "storyscope", "gutenberg", "writingprompts", "scp", "blogs"])
+    ap.add_argument("--split", default="train")
+    ap.add_argument("--limit", type=int, default=0)
+    args = ap.parse_args()
+
+    df, jobs = corpus_rows(args.corpus, args.split, args.limit)
+    if args.limit:
+        jobs = jobs[: args.limit]
+    print(f"{args.corpus} ({args.split}): {len(jobs)} docs", flush=True)
     t0 = time.time()
     with Pool() as pool:
-        rows = list(pool.imap_unordered(label_row, jobs, chunksize=64))
+        rows = list(pool.imap_unordered(label_row, jobs, chunksize=16))
     print(f"labeled {len(rows)} in {time.time() - t0:.0f}s", flush=True)
 
     out_df = pd.DataFrame(rows).sort_values("idx").drop(columns=["idx"])
-    out_df["model"] = df["model_name"].astype(str).values
     dest = ROOT / "data" / "training"
     dest.mkdir(parents=True, exist_ok=True)
-    out_df.to_parquet(dest / "spans_coai_train.parquet", index=False)
-    print(f"wrote {dest / 'spans_coai_train.parquet'}", flush=True)
+    out_path = dest / f"spans_{args.corpus}_{args.split}.parquet"
+    out_df.to_parquet(out_path, index=False)
+    print(f"wrote {out_path}", flush=True)
     print(f"pile: {out_df['pile'].value_counts().to_dict()}", flush=True)
     print("docs with spans:", int(out_df["spans"].map(lambda s: s != "[]").sum()), "/", len(out_df), flush=True)
 
 
 if __name__ == "__main__":
     main()
+
