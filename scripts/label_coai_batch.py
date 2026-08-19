@@ -64,7 +64,7 @@ def label_row(args: tuple) -> dict:
     }
 
 
-def corpus_rows(corpus: str, split: str, limit: int) -> tuple[pd.DataFrame, list[tuple]]:
+def corpus_rows(corpus: str, split: str, limit: int, min_pg: int = 0) -> tuple[pd.DataFrame, list[tuple]]:
     if corpus == "coai":
         df = pd.read_parquet(ROOT / "data" / "coai_train.parquet")
         jobs = [(i, str(t), int(l)) for i, (t, l) in enumerate(zip(df["text"], df["label"]))]
@@ -89,6 +89,11 @@ def corpus_rows(corpus: str, split: str, limit: int) -> tuple[pd.DataFrame, list
         dfs = [pd.read_parquet(p) for p in paths]
         df = dfs[0] if len(dfs) == 1 else pd.concat(dfs, ignore_index=True)
         jobs = [(i, str(t), 0) for i, t in enumerate(df["text"].tolist())]
+        if min_pg > 0:
+            pg = df["file_id"].str.replace("PG", "", regex=False).astype(int)
+            keep = pg >= min_pg
+            jobs = [(i, str(t), 0) for i, t in enumerate(df["text"][keep].tolist())]
+            print(f"  gutenberg filtered to PG>={min_pg}: {len(jobs)} chunks", flush=True)
         return df, jobs
     if corpus == "writingprompts":
         paths = sorted((ROOT / "data" / "raw" / "writingprompts").glob("train-*.parquet"))
@@ -131,10 +136,18 @@ def main() -> None:
     ap.add_argument("--corpus", default="coai", choices=["coai", "storyscope", "gutenberg", "writingprompts", "scp", "blogs"])
     ap.add_argument("--split", default="train")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--sample", type=int, default=0, help="random-sample N docs across all shards (overrides --limit)")
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--gutenberg-min-pg", type=int, default=0, help="gutenberg: keep only PG id >= N (recent uploads)")
     args = ap.parse_args()
 
-    df, jobs = corpus_rows(args.corpus, args.split, args.limit)
-    if args.limit:
+    df, jobs = corpus_rows(args.corpus, args.split, args.limit, args.gutenberg_min_pg)
+    if args.sample:
+        import random
+
+        rng = random.Random(args.seed)
+        jobs = rng.sample(jobs, min(args.sample, len(jobs)))
+    elif args.limit:
         jobs = jobs[: args.limit]
     print(f"{args.corpus} ({args.split}): {len(jobs)} docs", flush=True)
     t0 = time.time()
