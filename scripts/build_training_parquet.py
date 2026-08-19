@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd  # noqa: E402
 
+from slopdet.labels import parse_label  # noqa: E402
+
 
 def load_spans(path: Path, register: str) -> pd.DataFrame:
     df = pd.read_parquet(path)
@@ -40,7 +42,9 @@ def load_spans(path: Path, register: str) -> pd.DataFrame:
         rows.append(
             {
                 "text": rec["text"],
-                "label": int(rec.get("label", 1 if str(rec.get("pile", 1)) == "1" else 0)),
+                # default 1 (AI) for the AI-only corpora, 0 (human) otherwise;
+                # coai has an explicit label column so its default never applies
+                "label": parse_label(rec, default=1 if register == "storyscope" else 0),
                 "register": register,
                 "spans": [
                     {

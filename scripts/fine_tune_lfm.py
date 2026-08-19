@@ -36,6 +36,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 
+from slopdet.labels import parse_label
 from slopdet.lfm import load_encoder_body
 
 DOC_LABELS = {"human": 0, "ai": 1}
@@ -44,7 +45,7 @@ DOC_LABELS = {"human": 0, "ai": 1}
 @dataclass
 class Config:
     arch: str = "encoder"
-    model: str = "LiquidAI/LFM2.5-Encoder-230M"
+    model: str = "LiquidAI/LFM2.5-Encoder-350M"
     max_len: int = 512
     batch_size: int = 8
     grad_accum: int = 4
@@ -106,7 +107,7 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
                     spans = []
             rows.append({
                 "text": rec["text"],
-                "label": int(rec.get("label", DOC_LABELS.get(str(rec.get("pile", "human")), 0))),
+                "label": parse_label(rec, default=0),
                 "register": rec.get("register", "coai"),
                 "spans": spans,
             })
