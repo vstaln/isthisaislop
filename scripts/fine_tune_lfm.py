@@ -27,6 +27,7 @@ import os
 import sys
 import random
 import subprocess
+import gc
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -342,9 +343,9 @@ def main() -> int:
     train_ds = SlopDataset(train_rows, tok, cfg.max_len, lanes)
     val_ds = SlopDataset(val_rows, tok, cfg.max_len, lanes)
     cal_ds = SlopDataset(cal_rows, tok, cfg.max_len, lanes) if cal_rows else None
-    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
-    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size)
-    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size) if cal_ds else None
+    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True)
+    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True) if cal_ds else None
 
     model = (EncoderDetector(cfg.model, len(lanes)) if cfg.arch == "encoder"
              else build_decoder(cfg.model)).to(device)
@@ -382,13 +383,39 @@ def main() -> int:
     token_weights[1:] = (total / lane_counts[1:].clamp(min=1)).clamp(max=50)
     print(f"[data] token class weights: {token_weights.tolist()}", flush=True)
     token_loss_fn = nn.CrossEntropyLoss(ignore_index=-100, weight=token_weights)
+    try:
+        del rows
+    except NameError:
+        pass
+    gc.collect()
 
     total_steps = max(1, len(train_dl) // cfg.grad_accum) * cfg.epochs
     max_steps = 3 if args.smoke else total_steps * cfg.grad_accum
     args.out.mkdir(parents=True, exist_ok=True)
-    step, started = 0, time.time()
-    best_auroc = float("-inf")
+    _resume_ckpt = args.out / "checkpoint.pt"
+    _resume_step = 0
+    _resume_best = float("-inf")
+    if _resume_ckpt.exists() and not args.smoke:
+        try:
+            _ck = torch.load(str(_resume_ckpt), map_location="cpu")
+            if isinstance(_ck, dict) and "model" in _ck:
+                model.load_state_dict(_ck["model"])
+                _resume_step = int(_ck.get("step", 0))
+                print(f"[resume] loaded checkpoint step {_resume_step} from {_resume_ckpt}", flush=True)
+            del _ck; gc.collect()
+        except Exception as e:
+            print(f"[resume] failed {e}", flush=True)
+    step, started = _resume_step, time.time()
+    best_auroc = _resume_best
     best_state = None
+    try:
+        _bp = args.out / "best.pt"
+        if _bp.exists():
+            _b = torch.load(str(_bp), map_location="cpu")
+            best_auroc = float(_b.get("auroc", best_auroc))
+            del _b; gc.collect()
+    except Exception:
+        pass
 
     for epoch in range(cfg.epochs):
         for batch in train_dl:
@@ -419,17 +446,18 @@ def main() -> int:
                     scheduler.step()
                 opt.zero_grad(set_to_none=True)
             if step % 50 == 0 or args.smoke:
-                print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f} lr {opt.param_groups[0]['lr']:.2e}")
+                print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f} lr {opt.param_groups[0]['lr']:.2e}", flush=True)
             if cfg.ckpt_every and step % cfg.ckpt_every == 0:
-                torch.save({"step": step, "model": model.state_dict()}, args.out / "checkpoint.pt")
+                _tmp_ckpt = args.out / "checkpoint.tmp"
+                torch.save({"step": step, "model": model.state_dict()}, _tmp_ckpt)
+                import os as _os; _os.replace(_tmp_ckpt, args.out / "checkpoint.pt")
                 # Lightweight val check for best-model selection (M1 fix) — no grad, on val set.
-                if not args.smoke and len(val_rows) >= 200:
+                if not args.smoke and len(val_rows) >= 200 and step % 2000 == 0:
                     v_scores, v_labels = evaluate(model, val_dl, device, cfg.arch)
                     v_auroc = _gated_auroc(v_scores, v_labels)
                     if v_auroc == v_auroc and v_auroc > best_auroc:  # not nan
                         best_auroc = v_auroc
-                        best_state = {k: v.cpu() for k, v in model.state_dict().items()}
-                        torch.save({"step": step, "model": best_state, "auroc": best_auroc}, args.out / "best.pt")
+                        torch.save({"step": step, "model": {k: v.cpu() for k, v in model.state_dict().items()}, "auroc": best_auroc}, args.out / "best.pt")
                         print(f"[ckpt] new best val AUROC {best_auroc:.4f} at step {step}", flush=True)
             if step >= max_steps:
                 break
