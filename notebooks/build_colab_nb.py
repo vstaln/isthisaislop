@@ -178,7 +178,7 @@ def run_training(extra: list[str]) -> int:
 # Try fp16 first (default). On Turing T4, fp16 can NaN-abort; fall back to fp32.
 rc = run_training([])
 if rc != 0:
-    print("\n[retry] fp16 run failed (rc=%d). Retrying with --precision fp32..." % rc)
+    print("\\n[retry] fp16 run failed (rc=%d). Retrying with --precision fp32..." % rc)
     rc = run_training(["--precision", "fp32"])
 sys.exit(rc)
 """,
