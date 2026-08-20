@@ -124,9 +124,10 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
 
     if spans_parquet and spans_parquet.exists():
         import pyarrow.parquet as pq
-        pf = pq.ParquetFile(spans_parquet)
+        # logical columns (spans is a single list column, not lane/start/end leaves)
+        schema_names = set(pq.read_schema(spans_parquet).names)
         cols = [c for c in ("text", "label", "pile", "register", "spans")
-                if c in {f.name for f in pf.schema}]
+                if c in schema_names]
         if "register" not in cols:
             raise SystemExit(f"{spans_parquet}: missing 'register' column — rebuild with build_training_parquet.py (m3 fix)")
         if "text" not in cols:
