@@ -6,11 +6,16 @@ from typing import Any
 
 
 def threshold_at_fpr(human_scores: list[float], fpr: float = 0.01) -> float:
+    """Threshold where ~fpr of humans score strictly above it (descending)."""
     if not human_scores:
         return 1.0
     ordered = sorted(human_scores, reverse=True)
     k = max(0, min(len(ordered) - 1, int(len(ordered) * fpr)))
     return float(ordered[k])
+
+
+# Registry of registers that may appear in train_all.parquet (K3 gate).
+ALLOWED_REGISTERS = frozenset({"coai", "pile", "storyscope", "gutenberg", "blogs", "scp", "writingprompts", "smoke"})
 
 
 def human_percentile(score: float, human_scores: list[float]) -> float:

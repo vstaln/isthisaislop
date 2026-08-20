@@ -54,15 +54,23 @@ def auroc(scores: list[float], labels: list[int]) -> float:
 
 def tpr_at_fpr(scores: list[float], labels: list[int], fpr: float = 0.01) -> tuple[float, float]:
     """Threshold at 1% FPR on humans, and the TPR the model gets there."""
-    human = [(s, l) for s, l in zip(scores, labels) if l == 0]
-    ai = [(s, l) for s, l in zip(scores, labels) if l == 1]
-    if not human or not ai:
+    from slopdet.calibrate import threshold_at_fpr
+
+    human = [s for s, y in zip(scores, labels) if y == 0]
+    if not human:
         return float("nan"), float("nan")
-    human_scores = sorted(s[0] for s in human)
-    k = max(0, min(len(human_scores) - 1, int(len(human_scores) * fpr)))
-    thresh = human_scores[k]
-    tpr = sum(1 for s, _ in ai if s >= thresh) / len(ai)
+    thresh = threshold_at_fpr(human, fpr)
+    ai = [s for s, y in zip(scores, labels) if y == 1]
+    if not ai:
+        return float("nan"), thresh
+    tpr = sum(1 for s in ai if s > thresh) / len(ai)
     return tpr, thresh
+
+
+def _gated_auroc(scores: list[float], labels: list[int], min_n: int = 200, min_pos: int = 20) -> float:
+    if len(labels) < min_n or sum(labels) < min_pos or sum(1 for y in labels if y == 0) < min_pos:
+        return float("nan")
+    return auroc(scores, labels)
 
 
 class DetectorBundle(nn.Module):
@@ -89,6 +97,7 @@ def main() -> int:
     ap.add_argument("--model", default="LiquidAI/LFM2.5-Encoder-350M")
     ap.add_argument("--max-len", type=int, default=512)
     ap.add_argument("--val-frac", type=float, default=0.05)
+    ap.add_argument("--cal-frac", type=float, default=0.05)
     ap.add_argument("--out", type=Path, default=Path("artifacts/lfm_eval"))
     ap.add_argument("--quantize", action="store_true", help="also run the INT8 export probe")
     args = ap.parse_args()
@@ -106,15 +115,22 @@ def main() -> int:
 
     rows = load_rows(None, args.spans_parquet, False)
     lanes = sorted({s["lane"] for r in rows for s in r["spans"]})
-    # same per-(register,label) split as training
+    # same per-(register,label) split as training — val/cal distinct so thresholds not circular
     random.Random(0).shuffle(rows)
-    val_rows = []
-    for register in {r["register"] for r in rows}:
+    val_rows, cal_rows = [], []
+    for register in sorted({r["register"] for r in rows}):
         for label in (0, 1):
             group = [r for r in rows if r["register"] == register and r["label"] == label]
-            take = max(1, int(len(group) * args.val_frac)) if group else 0
-            val_rows += group[:take]
-    print(f"[eval] {len(val_rows)} val rows, lanes={lanes}", flush=True)
+            n_val = max(1, int(len(group) * args.val_frac)) if group else 0
+            n_cal = max(1, int(len(group) * args.cal_frac)) if group else 0
+            if len(group) and n_val + n_cal >= len(group):
+                n_val = max(1, len(group) // 10) if len(group) >= 10 else 1
+                n_cal = 1 if len(group) >= 3 else 0
+                if n_val + n_cal >= len(group):
+                    n_cal = 0
+            val_rows += group[:n_val]
+            cal_rows += group[n_val:n_val + n_cal]
+    print(f"[eval] {len(val_rows)} val / {len(cal_rows)} cal rows, lanes={lanes}", flush=True)
 
     # ---- build model, load trained weights ----
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -142,21 +158,50 @@ def main() -> int:
             regs.append(r["register"])
     print(f"[eval] scored {len(val_rows)} in {time.time()-t0:.1f}s", flush=True)
 
-    # ---- per-register metrics ----
+    # ---- thresholds from cal (not val) — M2 fix ----
+    cal_scores, cal_labels, cal_regs = [], [], []
+    if cal_rows:
+        with torch.no_grad():
+            for r in cal_rows:
+                enc = tok(r["text"], truncation=True, max_length=args.max_len, return_tensors="pt")
+                ids, mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
+                doc_logits, _ = model(ids, mask)
+                cal_scores.append(float(torch.softmax(doc_logits, -1)[0, 1].item()))
+                cal_labels.append(r["label"])
+                cal_regs.append(r["register"])
+    cal_thresh: dict[str, float] = {}
+    if cal_scores:
+        for reg in sorted(set(cal_regs)):
+            idx = [i for i, r in enumerate(cal_regs) if r == reg]
+            s = [cal_scores[i] for i in idx]
+            y = [cal_labels[i] for i in idx]
+            _, thr = tpr_at_fpr(s, y)
+            cal_thresh[reg] = thr
+        _, thr_all = tpr_at_fpr(cal_scores, cal_labels)
+        cal_thresh["all"] = thr_all
+
+    # ---- per-register metrics with gating (M4) ----
     metrics: dict[str, dict] = {}
     for register in sorted(set(regs)):
         idx = [i for i, r in enumerate(regs) if r == register]
         s = [scores[i] for i in idx]
         y = [labels[i] for i in idx]
-        tpr, thresh = tpr_at_fpr(s, y)
+        thr = cal_thresh.get(register, tpr_at_fpr(s, y)[1])
+        tpr = sum(1 for sc, lb in zip(s, y) if lb == 1 and sc > thr) / max(1, sum(1 for lb in y if lb == 1)) if any(lb == 1 for lb in y) else float("nan")
+        if sum(1 for lb in y if lb == 1) == 0 or sum(1 for lb in y if lb == 0) == 0:
+            tpr = float("nan")
         metrics[register] = {
-            "n": len(idx), "auroc": auroc(s, y),
-            "tpr_at_1pct_fpr": tpr, "threshold": thresh,
+            "n": len(idx), "auroc": _gated_auroc(s, y), "auroc_raw": auroc(s, y),
+            "tpr_at_1pct_fpr": tpr, "threshold": thr,
+            "threshold_source": "cal" if register in cal_thresh else "val",
         }
-    tpr_all, thresh_all = tpr_at_fpr(scores, labels)
+    all_thr = cal_thresh.get("all", tpr_at_fpr(scores, labels)[1])
+    all_tpr = sum(1 for sc, lb in zip(scores, labels) if lb == 1 and sc > all_thr) / max(1, sum(1 for lb in labels if lb == 1))
     metrics["all"] = {
-        "n": len(labels), "auroc": auroc(scores, labels),
-        "tpr_at_1pct_fpr": tpr_all, "threshold": thresh_all,
+        "n": len(labels), "auroc": _gated_auroc(scores, labels), "auroc_raw": auroc(scores, labels),
+        "tpr_at_1pct_fpr": all_tpr, "threshold": all_thr,
+        "threshold_source": "cal" if "all" in cal_thresh else "val",
+        "note": "all is register-imbalanced; report pile/coai separately (K3)",
     }
     print(json.dumps(metrics, indent=2))
 

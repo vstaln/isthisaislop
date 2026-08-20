@@ -75,6 +75,9 @@ def main() -> None:
         # source (human/ai); spans labeled by scripts/label_artem9k.py.
         # register "pile" distinguishes real-world web text from curated corpora.
         ("data/training/spans_artem9k_train.parquet", "pile"),
+        # writingprompts: modern human short fiction (100k) — breaks the
+        # storyscope=AI / gutenberg=human fiction confound (K3 fix). Same human label.
+        ("data/training/spans_writingprompts_train.parquet", "writingprompts"),
     ]
     frames = []
     for rel, register in corpora:

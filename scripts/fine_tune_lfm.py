@@ -124,16 +124,26 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
 
     if spans_parquet and spans_parquet.exists():
         import pyarrow.parquet as pq
-
+        pf = pq.ParquetFile(spans_parquet)
         cols = [c for c in ("text", "label", "pile", "register", "spans")
-                if c in {f.name for f in pq.ParquetFile(spans_parquet).schema}]
+                if c in {f.name for f in pf.schema}]
+        if "register" not in cols:
+            raise SystemExit(f"{spans_parquet}: missing 'register' column — rebuild with build_training_parquet.py (m3 fix)")
+        if "text" not in cols:
+            raise SystemExit(f"{spans_parquet}: missing 'text' column")
         rows = []
         for chunk_df in _read_chunked(spans_parquet, cols):
             for rec in chunk_df.to_dict("records"):
+                reg = rec.get("register")
+                if not reg:
+                    raise SystemExit(f"row missing register: {rec}")
+                # Require explicit label/pile — parse_label raises on garbage; default 0 only if both absent (should not happen in train_all)
+                if rec.get("label") is None and rec.get("pile") is None:
+                    raise SystemExit(f"row missing label/pile: register={reg}")
                 rows.append({
                     "text": rec["text"],
                     "label": parse_label(rec, default=0),
-                    "register": rec.get("register", "coai"),
+                    "register": reg,
                     "spans": _coerce_spans(rec.get("spans")),
                 })
         return rows
@@ -232,13 +242,22 @@ def auroc(scores: list[float], labels: list[int]) -> float:
 
 
 def tpr_at_fpr(scores: list[float], labels: list[int], fpr: float = 0.01) -> tuple[float, float]:
-    human = sorted((s for s, y in zip(scores, labels) if y == 0), reverse=True)
+    from slopdet.calibrate import threshold_at_fpr
+
+    human = [s for s, y in zip(scores, labels) if y == 0]
     if not human:
         return float("nan"), float("nan")
-    threshold = human[min(int(len(human) * fpr), len(human) - 1)]
+    threshold = threshold_at_fpr(human, fpr)
     ai = [s for s, y in zip(scores, labels) if y == 1]
     tpr = sum(s > threshold for s in ai) / len(ai) if ai else float("nan")
     return tpr, threshold
+
+
+def _gated_auroc(scores: list[float], labels: list[int], min_n: int = 200, min_pos: int = 20) -> float:
+    """Return AUROC or nan if too few samples to be meaningful (M4 gate)."""
+    if len(labels) < min_n or sum(labels) < min_pos or sum(1 for y in labels if y == 0) < min_pos:
+        return float("nan")
+    return auroc(scores, labels)
 
 
 # ---------------------------------------------------------------- train
@@ -275,6 +294,8 @@ def main() -> int:
     ap.add_argument("--precision", choices=["fp16", "fp32"], default=Config.precision)
     ap.add_argument("--ckpt-every", type=int, default=Config.ckpt_every)
     ap.add_argument("--val-frac", type=float, default=0.05)
+    ap.add_argument("--cal-frac", type=float, default=0.05)
+    ap.add_argument("--warmup-frac", type=float, default=0.1, help="fraction of steps for linear warmup (0=off)")
     ap.add_argument("--smoke", action="store_true", help="synthetic data, 3 steps, no corpus needed")
     args = ap.parse_args()
 
@@ -288,26 +309,60 @@ def main() -> int:
 
     rows = load_rows(args.doc_parquet, args.spans_parquet, args.smoke)
     lanes = sorted({s["lane"] for r in rows for s in r["spans"]})
-    random.shuffle(rows)
-    val_rows, train_rows = [], []
-    for register in {r["register"] for r in rows}:
+    # Schema check: register allowlist + label 0/1 (labels.py already raises on pile/label mismatch)
+    from slopdet.calibrate import ALLOWED_REGISTERS
+    bad_regs = {r["register"] for r in rows} - ALLOWED_REGISTERS
+    if bad_regs:
+        raise SystemExit(f"unknown register(s) {bad_regs} — fix ALLOWED_REGISTERS or data build")
+    bad_labels = {r["label"] for r in rows} - {0, 1}
+    if bad_labels:
+        raise SystemExit(f"bad label values {bad_labels}")
+    random.Random(args.seed).shuffle(rows)
+    # Split per (register,label) into train / val / cal — cal distinct from val so thresholds not circular (M2 fix).
+    val_rows, cal_rows, train_rows = [], [], []
+    for register in sorted({r["register"] for r in rows}):
         for label in (0, 1):
             group = [r for r in rows if r["register"] == register and r["label"] == label]
-            take = max(1, int(len(group) * args.val_frac)) if group else 0
-            val_rows += group[:take]
-            train_rows += group[take:]
-    random.shuffle(train_rows)
-    print(f"[data] {len(train_rows)} train / {len(val_rows)} val · {len(lanes)} lanes")
+            n_val = max(1, int(len(group) * args.val_frac)) if group else 0
+            n_cal = max(1, int(len(group) * args.cal_frac)) if group else 0
+            # If group tiny, don't consume all rows for val+cal
+            if len(group) and n_val + n_cal >= len(group):
+                n_val = max(1, len(group) // 10) if len(group) >= 10 else 1
+                n_cal = 1 if len(group) >= 3 else 0
+                if n_val + n_cal >= len(group):
+                    n_cal = 0
+            val_rows += group[:n_val]
+            cal_rows += group[n_val:n_val + n_cal]
+            train_rows += group[n_val + n_cal:]
+    random.Random(args.seed).shuffle(train_rows)
+    print(f"[data] {len(train_rows)} train / {len(val_rows)} val / {len(cal_rows)} cal · {len(lanes)} lanes · registers {sorted({r['register'] for r in rows})}")
 
     tok = AutoTokenizer.from_pretrained(cfg.model, trust_remote_code=True)
     train_ds = SlopDataset(train_rows, tok, cfg.max_len, lanes)
     val_ds = SlopDataset(val_rows, tok, cfg.max_len, lanes)
+    cal_ds = SlopDataset(cal_rows, tok, cfg.max_len, lanes) if cal_rows else None
     train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
     val_dl = DataLoader(val_ds, batch_size=cfg.batch_size)
+    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size) if cal_ds else None
 
     model = (EncoderDetector(cfg.model, len(lanes)) if cfg.arch == "encoder"
              else build_decoder(cfg.model)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
+    # Warmup + cosine decay (M1 fix) — constant LR is a coin flip over 21k steps.
+    total_opt_steps = max(1, len(train_dl) // cfg.grad_accum) * cfg.epochs
+    warmup_steps = int(total_opt_steps * args.warmup_frac) if not args.smoke else 0
+    scheduler = None
+    if warmup_steps > 0 and total_opt_steps > 1:
+        try:
+            from transformers import get_cosine_schedule_with_warmup
+            scheduler = get_cosine_schedule_with_warmup(opt, warmup_steps, total_opt_steps)
+            print(f"[sched] cosine warmup {warmup_steps}/{total_opt_steps}", flush=True)
+        except Exception:
+            from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+            warm = LinearLR(opt, start_factor=0.01, total_iters=warmup_steps)
+            cosine = CosineAnnealingLR(opt, T_max=max(1, total_opt_steps - warmup_steps))
+            scheduler = SequentialLR(opt, [warm, cosine], milestones=[warmup_steps])
+            print(f"[sched] fallback warmup {warmup_steps}/{total_opt_steps}", flush=True)
     use_amp = cfg.precision == "fp16" and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     doc_loss_fn = nn.CrossEntropyLoss()
@@ -331,6 +386,8 @@ def main() -> int:
     max_steps = 3 if args.smoke else total_steps * cfg.grad_accum
     args.out.mkdir(parents=True, exist_ok=True)
     step, started = 0, time.time()
+    best_auroc = float("-inf")
+    best_state = None
 
     for epoch in range(cfg.epochs):
         for batch in train_dl:
@@ -357,41 +414,89 @@ def main() -> int:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(opt)
                 scaler.update()
+                if scheduler is not None:
+                    scheduler.step()
                 opt.zero_grad(set_to_none=True)
             if step % 50 == 0 or args.smoke:
-                print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f}")
+                print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f} lr {opt.param_groups[0]['lr']:.2e}")
             if cfg.ckpt_every and step % cfg.ckpt_every == 0:
                 torch.save({"step": step, "model": model.state_dict()}, args.out / "checkpoint.pt")
+                # Lightweight val check for best-model selection (M1 fix) — no grad, on val set.
+                if not args.smoke and len(val_rows) >= 200:
+                    v_scores, v_labels = evaluate(model, val_dl, device, cfg.arch)
+                    v_auroc = _gated_auroc(v_scores, v_labels)
+                    if v_auroc == v_auroc and v_auroc > best_auroc:  # not nan
+                        best_auroc = v_auroc
+                        best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                        torch.save({"step": step, "model": best_state, "auroc": best_auroc}, args.out / "best.pt")
+                        print(f"[ckpt] new best val AUROC {best_auroc:.4f} at step {step}", flush=True)
             if step >= max_steps:
                 break
         if step >= max_steps:
             break
 
+    # Final eval: thresholds from cal set (circular fix M2), metrics from val set with gating (M4).
     scores, labels = evaluate(model, val_dl, device, cfg.arch)
+    cal_scores, cal_labels, cal_regs = [], [], []
+    if cal_dl is not None:
+        cal_scores, cal_labels = evaluate(model, cal_dl, device, cfg.arch)
+        cal_regs = [r["register"] for r in cal_rows]
     registers = [r["register"] for r in val_rows]
+    # Build per-register thresholds from cal set if available, else fallback to val human scores per register.
+    cal_thresh: dict[str, float] = {}
+    if cal_scores:
+        for reg in sorted(set(cal_regs)):
+            idx = [i for i, r in enumerate(cal_regs) if r == reg]
+            s = [cal_scores[i] for i in idx]
+            y = [cal_labels[i] for i in idx]
+            _, thr = tpr_at_fpr(s, y)
+            cal_thresh[reg] = thr
+        # global fallback
+        _, thr_all = tpr_at_fpr(cal_scores, cal_labels)
+        cal_thresh["all"] = thr_all
     metrics: dict[str, dict] = {}
     for register in sorted(set(registers)):
         idx = [i for i, r in enumerate(registers) if r == register]
         s = [scores[i] for i in idx]
         y = [labels[i] for i in idx]
-        tpr, threshold = tpr_at_fpr(s, y)
-        metrics[register] = {"n": len(idx), "auroc": auroc(s, y), "tpr_at_1pct_fpr": tpr,
-                             "threshold": threshold}
-    tpr_all, threshold_all = tpr_at_fpr(scores, labels)
-    metrics["all"] = {"n": len(labels), "auroc": auroc(scores, labels),
-                      "tpr_at_1pct_fpr": tpr_all, "threshold": threshold_all}
+        # Use cal threshold if available, else val-derived (smoke or tiny cal)
+        thr = cal_thresh.get(register, tpr_at_fpr(s, y)[1])
+        tpr = sum(1 for sc, lb in zip(s, y) if lb == 1 and sc > thr) / max(1, sum(1 for lb in y if lb == 1))
+        if sum(1 for lb in y if lb == 1) == 0 or sum(1 for lb in y if lb == 0) == 0:
+            tpr = float("nan")
+        gated = _gated_auroc(s, y)
+        raw = auroc(s, y)
+        metrics[register] = {"n": len(idx), "auroc": gated, "auroc_raw": raw,
+                             "tpr_at_1pct_fpr": tpr, "threshold": thr,
+                             "threshold_source": "cal" if register in cal_thresh else "val"}
+    # all
+    all_thr = cal_thresh.get("all", tpr_at_fpr(scores, labels)[1])
+    all_tpr = sum(1 for sc, lb in zip(scores, labels) if lb == 1 and sc > all_thr) / max(1, sum(1 for lb in labels if lb == 1))
+    metrics["all"] = {"n": len(labels), "auroc": _gated_auroc(scores, labels), "auroc_raw": auroc(scores, labels),
+                      "tpr_at_1pct_fpr": all_tpr, "threshold": all_thr,
+                      "threshold_source": "cal" if "all" in cal_thresh else "val",
+                      "note": "all is register-imbalanced (pile 82%); report pile/coai separately (K3)"}
 
-    torch.save(model.state_dict(), args.out / "model.pt")
+    # Prefer best checkpoint if it exists (select by val AUROC, not last step).
+    if best_state is not None:
+        torch.save(best_state, args.out / "model.pt")
+        print(f"[done] saved best.pt val AUROC {best_auroc:.4f} as model.pt", flush=True)
+    else:
+        torch.save(model.state_dict(), args.out / "model.pt")
     tok.save_pretrained(args.out)
     (args.out / "calibration.json").write_text(json.dumps(
-        {"fpr": 0.01, "per_register": {k: v["threshold"] for k, v in metrics.items()}}, indent=2) + "\n")
+        {"fpr": 0.01, "per_register": {k: v["threshold"] for k, v in metrics.items()},
+         "threshold_source": "cal" if cal_scores else "val"}, indent=2) + "\n")
     (args.out / "manifest.json").write_text(json.dumps({
         "config": asdict(cfg), "lanes": lanes, "git_sha": git_sha(), "metrics": metrics,
+        "val_cal_split": {"val_frac": args.val_frac, "cal_frac": args.cal_frac},
+        "warmup_frac": args.warmup_frac,
+        "best_val_auroc": best_auroc if best_auroc != float("-inf") else None,
         "trained_on": [str(args.spans_parquet if args.spans_parquet.exists() else args.doc_parquet)]
         if not args.smoke else ["synthetic-smoke"],
-        "never_trained_on": ["eval/labels/laguna.jsonl", "eval/labels/local.jsonl"],
+        "never_trained_on": ["eval/labels/laguna.jsonl", "eval/labels/local.jsonl", "data/coai_test.parquet"],
         "wall_seconds": round(time.time() - started, 1),
-        "note": "doc head is pile resemblance, not an authorship or %-AI claim",
+        "note": "doc head is pile resemblance, not an authorship or %-AI claim; all AUROC is imbalanced, use pile/coai",
     }, indent=2) + "\n")
     print(json.dumps(metrics, indent=2))
     print(f"[done] bundle at {args.out}")

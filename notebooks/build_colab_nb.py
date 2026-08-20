@@ -58,10 +58,11 @@ Trains one model that does both jobs:
 2. **Why:** which sentences + spans, with named patterns.
 
 Base: `LiquidAI/LFM2.5-Encoder-350M` (bidirectional masked-LM encoder, ~354M params),
-fine-tuned 1 epoch on the 122k-doc mixed corpus (coai / storyscope / gutenberg / blogs / scp).
-fp16 on T4; NaN preflight aborts loudly rather than silently producing garbage.
+fine-tuned 1 epoch on the 786k-doc mixed corpus (pile 564k real web + writingprompts 100k human fiction + coai 62k + storyscope 36k + gutenberg 15k + blogs 7.8k).
+fp16 on T4 with 10% warmup→cosine, cal/val split (thresholds on held-out cal, not val), best-AUROC checkpoint, gated metrics; NaN preflight aborts loudly.
 
 Exports `artifacts/lfm/` onto Google Drive `MyDrive/isthisaislop/`.
+~4-5h on T4 for 786k docs (21.5k steps ×4 grad_accum, batch 8); checkpoints every 500 steps to Drive.
 """,
         ),
         nb_cell(
