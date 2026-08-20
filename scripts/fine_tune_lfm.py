@@ -24,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import random
 import subprocess
 import time
@@ -33,6 +34,14 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+
+# Ensure `slopdet` (src/) is importable no matter the CWD. Colab runs this as
+# `python scripts/fine_tune_lfm.py` from a Drive dir; uv runs it from the repo root.
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
+if str(_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "scripts"))
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 
