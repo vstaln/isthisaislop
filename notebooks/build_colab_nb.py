@@ -158,21 +158,29 @@ else:
         ),
         nb_cell(
             "code",
-            """# Train: LFM2.5-Encoder-350M, 1 epoch, fp16, checkpoints to Drive
+            """# Train: LFM2.5-Encoder-350M, 1 epoch; fp16 with automatic fp32 fallback
 import sys, subprocess
 from pathlib import Path
 
-cmd = [
-    sys.executable, "scripts/fine_tune_lfm.py",
-    "--arch", "encoder",
-    "--model", MODEL,
-    "--spans-parquet", DATA_PARQUET,
-    "--max-len", str(MAX_LEN),
-    "--epochs", str(EPOCHS),
-    "--out", "artifacts/lfm",
-]
-print("running:", " ".join(cmd))
-sys.exit(subprocess.call(cmd))
+def run_training(extra: list[str]) -> int:
+    cmd = [
+        sys.executable, "scripts/fine_tune_lfm.py",
+        "--arch", "encoder",
+        "--model", MODEL,
+        "--spans-parquet", DATA_PARQUET,
+        "--max-len", str(MAX_LEN),
+        "--epochs", str(EPOCHS),
+        "--out", "artifacts/lfm",
+    ] + extra
+    print("running:", " ".join(cmd))
+    return subprocess.call(cmd)
+
+# Try fp16 first (default). On Turing T4, fp16 can NaN-abort; fall back to fp32.
+rc = run_training([])
+if rc != 0:
+    print("\n[retry] fp16 run failed (rc=%d). Retrying with --precision fp32..." % rc)
+    rc = run_training(["--precision", "fp32"])
+sys.exit(rc)
 """,
         ),
     ]
