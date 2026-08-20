@@ -451,6 +451,15 @@ def main() -> int:
                 _tmp_ckpt = args.out / "checkpoint.tmp"
                 torch.save({"step": step, "model": model.state_dict()}, _tmp_ckpt)
                 import os as _os; _os.replace(_tmp_ckpt, args.out / "checkpoint.pt")
+                # auto HF backup every ckpt (VM -> HF durable, survives prune)
+                try:
+                    _hf = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                    if _hf and step % 1000 == 0:  # push every 1000 to avoid rate limit (1.4G)
+                        from huggingface_hub import upload_file
+                        upload_file(path_or_fileobj=str(args.out / "checkpoint.pt"), path_in_repo="checkpoint.pt", repo_id="vstalingrady/lfm-ckpt", repo_type="model", token=_hf)
+                        print(f"[hf] pushed checkpoint step {step}", flush=True)
+                except Exception as _e:
+                    print(f"[hf] push skip {_e}", flush=True)
                 # Lightweight val check for best-model selection (M1 fix) — no grad, on val set.
                 if not args.smoke and len(val_rows) >= 200 and step % 2000 == 0:
                     v_scores, v_labels = evaluate(model, val_dl, device, cfg.arch)
