@@ -88,29 +88,45 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
 
     import pandas as pd
 
-    if spans_parquet and spans_parquet.exists():
-        df = pd.read_parquet(spans_parquet)
-        rows = []
-        for rec in df.to_dict("records"):
-            spans = rec.get("spans")
-            if spans is None or (isinstance(spans, (list, tuple)) and len(spans) == 0):
-                spans = []
-            elif isinstance(spans, str):
+    def _coerce_spans(spans) -> list[dict]:
+        """Return the span dicts that carry a lane, tolerating None/str/list/ndarray."""
+        if spans is None:
+            return []
+        if isinstance(spans, str):
+            try:
                 spans = json.loads(spans)
-            if isinstance(spans, (list, tuple)):
-                spans = [s for s in spans if isinstance(s, dict) and s.get("lane")]
-            else:
-                # numpy array or other — coerce safely
-                try:
-                    spans = [s for s in spans if isinstance(s, dict) and s.get("lane")]
-                except TypeError:
-                    spans = []
-            rows.append({
-                "text": rec["text"],
-                "label": parse_label(rec, default=0),
-                "register": rec.get("register", "coai"),
-                "spans": spans,
-            })
+            except json.JSONDecodeError:
+                return []
+        if isinstance(spans, (list, tuple)):
+            return [s for s in spans if isinstance(s, dict) and s.get("lane")]
+        # numpy array / Arrow list — coerce safely
+        try:
+            return [s for s in spans if isinstance(s, dict) and s.get("lane")]
+        except TypeError:
+            return []
+
+    def _read_chunked(path: Path, cols: list[str], chunk: int = 10_000):
+        """Stream a parquet in slices so peak RAM stays bounded on Colab."""
+        import pyarrow.parquet as pq
+
+        pf = pq.ParquetFile(path)
+        for batch in pf.iter_batches(batch_size=chunk, columns=cols):
+            yield batch.to_pandas()
+
+    if spans_parquet and spans_parquet.exists():
+        import pyarrow.parquet as pq
+
+        cols = [c for c in ("text", "label", "pile", "register", "spans")
+                if c in {f.name for f in pq.ParquetFile(spans_parquet).schema}]
+        rows = []
+        for chunk_df in _read_chunked(spans_parquet, cols):
+            for rec in chunk_df.to_dict("records"):
+                rows.append({
+                    "text": rec["text"],
+                    "label": parse_label(rec, default=0),
+                    "register": rec.get("register", "coai"),
+                    "spans": _coerce_spans(rec.get("spans")),
+                })
         return rows
 
     if not doc_parquet or not doc_parquet.exists():
@@ -118,9 +134,12 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
             f"no corpus at {doc_parquet} / {spans_parquet}. Rebuild it with the commands in "
             "docs/HANDOFF.md §4, or pass --smoke to validate the code path without data."
         )
-    df = pd.read_parquet(doc_parquet)
-    return [{"text": r["text"], "label": int(r["label"]), "register": r.get("register", "coai"),
-             "spans": []} for r in df.to_dict("records")]
+    rows = []
+    for chunk_df in _read_chunked(doc_parquet, ["text", "label", "register"]):
+        for rec in chunk_df.to_dict("records"):
+            rows.append({"text": rec["text"], "label": int(rec["label"]),
+                         "register": rec.get("register", "coai"), "spans": []})
+    return rows
 
 
 class SlopDataset(Dataset):
