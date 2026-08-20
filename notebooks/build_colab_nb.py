@@ -158,6 +158,28 @@ else:
         ),
         nb_cell(
             "code",
+            """# DIAGNOSTIC — run the trainer inline so the real exception shows
+# If the training cell fails with rc=1 and no message, run THIS cell:
+import sys, traceback
+sys.path.insert(0, str(Path("scripts").resolve()))
+sys.path.insert(0, str(Path("src").resolve()))
+import fine_tune_lfm
+try:
+    sys.argv = ["fine_tune_lfm.py", "--arch", "encoder", "--model", MODEL,
+                "--spans-parquet", DATA_PARQUET, "--max-len", str(MAX_LEN),
+                "--epochs", str(EPOCHS), "--out", "artifacts/lfm",
+                "--precision", "fp32"]
+    rc = fine_tune_lfm.main()
+    print("main() returned", rc)
+except SystemExit as e:
+    print("SystemExit:", e)
+except Exception:
+    traceback.print_exc()
+print("DIAGNOSTIC DONE")
+""",
+        ),
+        nb_cell(
+            "code",
             """# Train: LFM2.5-Encoder-350M, 1 epoch; fp16 with automatic fp32 fallback
 import sys, subprocess
 from pathlib import Path
@@ -172,13 +194,26 @@ def run_training(extra: list[str]) -> int:
         "--epochs", str(EPOCHS),
         "--out", "artifacts/lfm",
     ] + extra
-    print("running:", " ".join(cmd))
-    return subprocess.call(cmd)
+    print("running:", " ".join(cmd), flush=True)
+    # Stream the child's output live so the real error is visible,
+    # and capture it so we can print the tail on failure.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    lines = []
+    for line in proc.stdout:
+        lines.append(line)
+        print(line, end="", flush=True)
+    rc = proc.wait()
+    if rc != 0:
+        print("\\n[FAILED rc=%d] last 30 lines:" % rc, flush=True)
+        for l in lines[-30:]:
+            print("   | " + l.rstrip(), flush=True)
+    return rc
 
 # Try fp16 first (default). On Turing T4, fp16 can NaN-abort; fall back to fp32.
 rc = run_training([])
 if rc != 0:
-    print("\\n[retry] fp16 run failed (rc=%d). Retrying with --precision fp32..." % rc)
+    print("\\n[retry] fp16 run failed (rc=%d). Retrying with --precision fp32..." % rc, flush=True)
     rc = run_training(["--precision", "fp32"])
 sys.exit(rc)
 """,
