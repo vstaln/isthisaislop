@@ -23,7 +23,7 @@ from transformers import AutoTokenizer
 
 from slopdet.lfm import load_encoder_body
 
-DEFAULT_MODEL = "LiquidAI/LFM2.5-Encoder-230M"
+DEFAULT_MODEL = "LiquidAI/LFM2.5-Encoder-350M"
 N_LANES = 8
 
 
