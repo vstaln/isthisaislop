@@ -343,9 +343,9 @@ def main() -> int:
     train_ds = SlopDataset(train_rows, tok, cfg.max_len, lanes)
     val_ds = SlopDataset(val_rows, tok, cfg.max_len, lanes)
     cal_ds = SlopDataset(cal_rows, tok, cfg.max_len, lanes) if cal_rows else None
-    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True)
-    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True)
-    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size, num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True) if cal_ds else None
+    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
+    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size)
+    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size) if cal_ds else None
 
     model = (EncoderDetector(cfg.model, len(lanes)) if cfg.arch == "encoder"
              else build_decoder(cfg.model)).to(device)
