@@ -4,7 +4,7 @@
 
 `slopdet` on PyPI, `itais` on CLI, `isthisaislop` on GitHub. Runs on-device (ONNX `~230MB` INT8, CPU).
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![Model: LFM2.5-Encoder-350M](https://img.shields.io/badge/model-LFM2.5--Encoder--350M-orange) [Dataset: vstalingrady/itais](https://huggingface.co/datasets/vstalingrady/itais) [Colab: Train T4](notebooks/SlopDetector_Colab.ipynb)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![Model: LFM2.5-Encoder-350M](https://img.shields.io/badge/model-LFM2.5--Encoder--350M-orange) [Dataset: vstalingrady/itais](https://huggingface.co/datasets/vstalingrady/itais)
 
 ---
 
@@ -155,19 +155,17 @@ Rebuild: `uv run python scripts/build_training_parquet.py` (needs `spans_*.parqu
 
 **Recipe:** `1 epoch` `lr 2e-5` `10% warmup → cosine` `batch 8 ×4 grad_accum=32` `max_len 512` `AdamW 0.01` `fp16` with `fp32` fallback (Turing `no bf16/flash-attn2`), `ckpt 500` → Drive, `best.pt` by `val AUROC`.
 
-**Colab (no Drive needed):**
+**Train (v2 data, any CUDA box with ≥12GB):**
 
 ```bash
-# via google-colab-cli (https://github.com/googlecolab/google-colab-cli)
-uv tool install google-colab-cli
-colab new --gpu T4
-colab install transformers accelerate safetensors pyarrow pandas scikit-learn
-# hf dataset (public, no token): vstalingrady/itais/train_all.parquet
-colab exec -f scripts/fine_tune_lfm.py -- --arch encoder --model LiquidAI/LFM2.5-Encoder-350M --spans-parquet train_all.parquet --max-len 512 --epochs 1 --out artifacts/lfm
-colab download artifacts/lfm --output ./artifacts/lfm
+# dataset pulls from HF (public, no token): vstalingrady/itais/v2_train_labeled.parquet
+uv run python scripts/fine_tune_lfm.py --arch encoder \
+  --model LiquidAI/LFM2.5-Encoder-350M \
+  --spans-parquet data/v2/v2_train.parquet.labeled.parquet \
+  --max-len 512 --epochs 1 --out artifacts/lfm
 ```
 
-Or notebook `notebooks/SlopDetector_Colab.ipynb` → Runtime `T4` → Run all (`~4-5h` for `786k`, `22k` steps). Or local `uv run python scripts/fine_tune_lfm.py --arch encoder --smoke` (`3` steps `18s` CPU, no data).
+Smoke-test the graph anywhere (no GPU, no data): `uv run python scripts/fine_tune_lfm.py --arch encoder --smoke` (`3` steps, ~18s CPU).
 
 **CPU floor (no GPU):** `uv run python scripts/train_cpu_scorer.py` → `artifacts/sklearn_bundle.json` (`AUC 0.8643` on leaked `coai_test` — use `pile` holdout instead).
 
