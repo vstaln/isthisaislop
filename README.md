@@ -93,7 +93,36 @@ print(explain("In today's digital age, we leverage synergies. Thursday at 3pm I 
 
 ---
 
-### Data — 786k docs, not 122k
+### Data — v2 (current): 222k docs, provenance-labeled
+
+`data/v2/v2_train.parquet.labeled.parquet` (287MB, on HF `vstalingrady/itais/v2_train_labeled.parquet`):
+
+| slice | docs | label |
+|---|---|---|
+| writingprompts human fiction | 61,954 | 0 |
+| coai | 38,784 | 8.8k / 30k |
+| gutenberg / wiki_intro / blogs human | 36,691 | 0 |
+| m4_* (5 domains) | 38,705 | 1 |
+| hc3 families (human + `_gpt`) | 13,286 | paired |
+| beemo + raid pairs | 6,731 | paired |
+| **contrastive generations** `rewrite_pair` + `respond_pair` | **12,803** | 1 |
+
+Labels are provenance-based (a row is AI iff a machine was watched writing it or its
+public corpus ships it as AI) — no model-judged ground truth. Every generated story
+carries a `split_hint` pair-key (`para:`/`premise:`/`fictpair:`) linking it to its human
+source so contrastive pairs never straddle train/eval. Generators for our pairs:
+gemma-4-26b, laguna-s-2.1, ox-alpha-free (recorded per row in `generator`).
+
+Holdouts on HF: `v2_holdout_labeled.parquet`, `v2_holdout_paraphrase_labeled.parquet`,
+`v2_holdout_mixed.parquet`, `v2_holdout_unseen_model_labeled.parquet` (generator-disjoint).
+
+Rebuild pipeline: oracle generation (`scripts/generate_ai_stories.py`, opencode-go /
+ox-alpha-free) → `scripts/merge_all_gen.py` → contamination audit
+(`scripts/run_contamination_audit.py`, stratified blind-judge over all 27 registers).
+
+---
+
+### Data — v1 (legacy): 786k docs
 
 `data/training/train_all.parquet` (`1.46GB`, gitignored, on HF `vstalingrady/itais`):
 
