@@ -58,5 +58,60 @@
     "cpu_logistic_floor": "NEXT-1: coai-test AUROC of artifacts/sklearn_bundle.json",
     "trained_model": "no neural model trained yet",
     "on_device_latency": "B2: needs target phone"
+  },
+  "v3_build": {
+    "date": "2026-08-25",
+    "command": "uv run python scripts/build_v3.py --v2 /tmp/v2_train.parquet --out data/v3 (+ --refine)",
+    "fixes": [
+      "F1 m4 per-(domain,label) cap refetch",
+      "F2 register canonicalization via pair-hints",
+      "F3 per-register sentence-truncation length matching",
+      "F4 era tags",
+      "per-register 1:1 balance, floor 1500"
+    ],
+    "probes_v2": {
+      "register_only": 0.989,
+      "length_only": 0.705,
+      "share_single_label": 0.811
+    },
+    "probes_v3_balanced": {
+      "register_only": 0.536,
+      "length_only": 0.536,
+      "rows": 116775,
+      "share_single_label": 0.0
+    },
+    "files": {
+      "v3_holdout_labeled.parquet": {
+        "sha256_16": "f48f53c79ad029d1",
+        "bytes": 8184700
+      },
+      "v3_holdout_mixed.parquet": {
+        "sha256_16": "f75ccc348ba98c29",
+        "bytes": 14905
+      },
+      "v3_holdout_paraphrase_labeled.parquet": {
+        "sha256_16": "5de60079442760d3",
+        "bytes": 557197
+      },
+      "v3_holdout_unseen_model_labeled.parquet": {
+        "sha256_16": "ab603f1aaa188cb0",
+        "bytes": 174356
+      },
+      "v3_train_balanced.parquet": {
+        "sha256_16": "918687a3b483cdba",
+        "bytes": 87734197
+      },
+      "v3_train_full.parquet": {
+        "sha256_16": "74c540c3da6cdf1a",
+        "bytes": 199562667
+      }
+    },
+    "training_file": "v3_train_balanced.parquet",
+    "known_gaps": [
+      "spans cleared (offsets invalidated by truncation; D2 rebuilds them)",
+      "raid/hc3 small registers stay imbalanced under the 1500 floor",
+      "post-2022 verified-human still absent",
+      "AI pile still mostly 2023-era generators"
+    ]
   }
 }
