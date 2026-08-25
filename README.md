@@ -95,7 +95,7 @@ print(explain("In today's digital age, we leverage synergies. Thursday at 3pm I 
 
 ### Data — v2 (current): 222k docs, provenance-labeled
 
-`data/v2/v2_train.parquet.labeled.parquet` (287MB, on HF `vstalingrady/itais/v2_train_labeled.parquet`):
+`v2_train_labeled.parquet` (287MB, on HF `vstalingrady/itais`; the trainer pulls it automatically):
 
 | slice | docs | label |
 |---|---|---|
@@ -151,33 +151,50 @@ Rebuild: `uv run python scripts/build_training_parquet.py` (needs `spans_*.parqu
 
 **Base:** `LiquidAI/LFM2.5-Encoder-350M` (`354M`, `65k vocab`, `8k ctx`, `trust_remote_code=True`, load via `slopdet.lfm.load_encoder_body` — `AutoModel` gives random weights, guarded).
 
-**Heads:** mean-pooled doc (`2`) + per-token lane (`5`: `0=no lane` + `construction/rhetorical/storyscope/style`), class-balanced `50×` ( `>99%` tokens are `0`).
+**Heads:** mean-pooled doc (`2`) + per-token lane (`5`: `0=no lane` + `construction/rhetorical/storyscope/style`), class-balanced `50×` (`>99%` tokens are `0`). One definition in `slopdet.detector.DetectorBundle`, shared by trainer, evaluator and exporter; the lane count is read back off the checkpoint so nothing downstream guesses it.
 
-**Recipe:** `1 epoch` `lr 2e-5` `10% warmup → cosine` `batch 8 ×4 grad_accum=32` `max_len 512` `AdamW 0.01` `fp16` with `fp32` fallback (Turing `no bf16/flash-attn2`), `ckpt 500` → Drive, `best.pt` by `val AUROC`.
+**Recipe:** `1 epoch` `lr 2e-5` `10% warmup → cosine` `batch 8 ×4 grad_accum` `max_len 512` `AdamW 0.01` `fp16`/`bf16` with an `fp32` fallback (Turing has no bf16/flash-attn2), `ckpt 500`, `best.pt` by val AUROC.
 
-**Train (v2 data, any CUDA box with ≥12GB):**
+**Train v2 — one command on any CUDA box with ≥12GB:**
 
 ```bash
-# dataset pulls from HF (public, no token): vstalingrady/itais/v2_train_labeled.parquet
-uv run python scripts/fine_tune_lfm.py --arch encoder \
-  --model LiquidAI/LFM2.5-Encoder-350M \
-  --spans-parquet data/v2/v2_train.parquet.labeled.parquet \
-  --max-len 512 --epochs 1 --out artifacts/lfm
+uv sync --extra train
+uv run python scripts/fine_tune_lfm.py --arch encoder --out artifacts/lfm_v2
 ```
 
-Smoke-test the graph anywhere (no GPU, no data): `uv run python scripts/fine_tune_lfm.py --arch encoder --smoke` (`3` steps, ~18s CPU).
+That is the whole thing. The corpus defaults to `data/v2/v2_train_labeled.parquet` and, when that file is absent, downloads `vstalingrady/itais/v2_train_labeled.parquet` from the public HF dataset (no token needed) and prints which copy it used. Point `--corpus` somewhere else to override, `--hf-file` to pull a different file from the dataset.
 
-**CPU floor (no GPU):** `uv run python scripts/train_cpu_scorer.py` → `artifacts/sklearn_bundle.json` (`AUC 0.8643` on leaked `coai_test` — use `pile` holdout instead).
+**The knobs that matter on a bigger card:**
+
+```bash
+uv run python scripts/fine_tune_lfm.py --arch encoder \
+  --max-len 2048 --batch-size 4 --grad-accum 9 --precision bf16 \
+  --contrastive 0.5 --ckpt-every 250 --out artifacts/lfm_v2
+```
+
+`--contrastive` adds same-prompt InfoNCE over the `25,424` human/AI pairs the corpus's `split_hint` keys join (it aborts rather than training silently unpaired if it finds none). `--token-loss-weight 0` trains the doc head alone — defensible, since only `5.3%` of v2 rows carry spans and the regex ontology behind them is non-discriminative. `--max-steps 500` runs the memory probe and prints peak CUDA allocation.
+
+**Splits are pair-safe.** Train/val/cal are cut per `(register, label)` with whole `split_hint` families kept on one side, so a machine rewrite is never scored by a model that trained on the human text it came from. On the shipped v2 parquet the old row-wise split put `4,634` eval rows in the same family as a training row; it is `0` now.
+
+Smoke-test the graph anywhere (no GPU, no corpus): `uv run python scripts/fine_tune_lfm.py --arch encoder --smoke` (`3` steps, ~`2.5 min` on `4` cloud vCPU with the `350M` body).
+
+**CPU floor (no GPU):** `uv run python scripts/train_cpu_scorer.py` → `artifacts/sklearn_bundle.json` (`AUC 0.8643` on leaked `coai_test` — use a real holdout instead).
 
 ---
 
-### Evaluation — per register, not “all”
+### Evaluation — per register, not “all”, in one post-train step
 
-`scripts/fine_tune_lfm.py:438` + `scripts/eval_trained.py:153` → `cal` thresholds (`1% FPR` on held-out `cal`, not `val`) + `val` metrics, gated `n<200` or `min_pos<20 → nan` (`all` is `pile`-dominated, `82%`).
+```bash
+uv run python scripts/eval_trained.py --ckpt artifacts/lfm_v2/model.pt --quantize
+```
 
-Report: `AUROC` (gated + raw), `TPR@1%FPR`, `threshold` (`cal`), `n` per `coai` / `pile` / `storyscope` / `writingprompts+gutenberg` / `blogs` (`scp` `n=50` → `nan`). Thresholds per register, never global.
+`scripts/eval_trained.py` is the canonical post-training step and the only one — it replaces the old `eval_proper.py`. Same corpus, same `--val-frac`/`--cal-frac`/`--seed` as the training run reproduces the same pair-safe split, so its numbers are comparable to the training manifest rather than a second opinion from a different slice. It writes `eval.json`, `calibration.json`, `cross_register.json` and, with `--quantize`, `export_probe.json`.
 
-Post-train: `uv run python scripts/eval_trained.py --spans-parquet data/training/train_all.parquet --ckpt artifacts/lfm/model.pt --quantize` → `artifacts/lfm_eval/eval.json` + INT8 `max_logit_drift` (`doc ~0.15` untrained, re-check trained).
+Every metric comes from `slopdet.metrics`: AUROC (tie-corrected, gated to `nan` below `n<200` or `min_pos<20`), `TPR@1%FPR`, and a threshold fitted on the held-out `cal` slice — never on the `val` slice it is reported against, and never one global cut.
+
+**Read `cross_register.json` first.** A model that learnt register or era rather than provenance scores near `1.0` on every human-register × AI-register pair while sitting at chance inside a register that holds both classes. That is exactly how v1 failed.
+
+`--final-report` additionally scores the vault (`eval/labels/*.jsonl` + the generator-disjoint HF holdout parquets). Those are for reporting once, never for selecting a checkpoint.
 
 ---
 

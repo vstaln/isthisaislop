@@ -1,8 +1,5 @@
 # Third-party notices
 
-## Anthropic jacobian-lens
-Apache-2.0. Used at training time only; not vendored in v1.
-
 ## Wikipedia:Signs of AI writing
 CC BY-SA 4.0. Descriptive text and fix blurbs derived from
 https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
@@ -16,7 +13,13 @@ Pattern ids and structural rules adapted as functional regexes in
 Named patterns adapted as functional regexes. MIT-compatible.
 
 ## Hello-SimpleAI/HC3
-Used as a training corpus when the Colab notebook can download it.
+Question-paired human/ChatGPT answers, pulled by `scripts/fetch_v2.py` into the v2
+training mix as the `hc3_*` registers.
+
+## coai/ai-text-detection-training
+arXiv abstracts vs LLM paraphrases. Downloaded on demand by
+`scripts/train_cpu_scorer.py` for the CPU logistic floor, and carried into v2 as
+the `coai` register.
 
 ## RAID (liamdugan/raid)
 Train split only. RAID-test is never downloaded, never trained on.
