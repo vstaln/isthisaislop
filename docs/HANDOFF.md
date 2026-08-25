@@ -178,6 +178,9 @@ register, low slop density. The product runs on blogs, emails and fiction. Story
 fiction; Gutenberg/WP/SCP cover human fiction; blogs cover the register the word "slop" was coined
 for and are still unextracted. Training on coai and gating on coai measures the easiest slice we own.
 
+> **2026-08-25:** dataset + span-model + why-layer execution plan lives in `docs/V3-PLAN.md`;
+> it supersedes this file's dataset/eval sections where they conflict.
+
 ## 5. Evaluation — per register, at a fixed FPR
 
 Report per slice, every run: **coai (academic paraphrase) · AI fiction (StoryScope) · human fiction
