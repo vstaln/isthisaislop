@@ -237,3 +237,52 @@ Rules for every future revision, from reviewing rev 1:
 6. One authoritative plan. Competing plan docs get a superseded header the moment they lose.
 7. Targets name their baseline. "AUC ≥ 0.95" without the current number is a wish.
 8. Expiry date plus a re-derivation procedure.
+
+---
+
+## V1 POSTMORTEM (2026-08-21) — read before training anything
+
+V1 final weights: an era-and-register classifier, NOT a slop detector.
+Proper eval (`artifacts/eval_proper/report.json`): all cross-register pairs 1.00
+(length/era shortcut), **coai strict AUROC 0.5003 vs regex floor 0.8643**,
+heldouts 0.75–0.86 (laguna/local/deepseek). Mid-training val 0.9998 was an
+unstratified lie; coai was forgotten over the last 37k steps while pile/storyscope
+absorbed capacity. HF model card carries a DO-NOT-USE warning.
+
+Root causes (all fixed in v2 spec): pile length confound (72% of mix), storyscope
+AI-only anthology prompts, head-truncation at 512, no paired same-topic data,
+unstratified val metric.
+
+## V2 STATE (ready to launch)
+
+- `data/v2/v2_train.parquet.labeled.parquet` — 211,606 rows, deterministic spans,
+  storyscope+pile-free, provenance columns. Holdouts separated:
+  stratified / unseen-model (cohere-chat) / paraphrase / mixed-authorship.
+- Pending data: fictpair generation (ox-alpha × 3 personas on WP prompts; ~146/15k
+  stories done, resumable via scripts/generate_ai_stories.py) → merge with
+  scripts/merge_fictpair.py (also stamps human hints for pairing).
+- Contrastive pairing: src/slopdet/pairs.py + --contrastive flag (InfoNCE on
+  same-prompt human/AI pairs from hc3/wiki_intro/fictpair hints).
+- Optimizer: AdamW (Muon implemented per DeepSeek-V4 spec behind --optimizer muon,
+  untested at scale — experiment only).
+- Test vault: holdouts + laguna/local/deepseek are FINAL-REPORTING-ONLY. Never
+  select checkpoints or tune against them.
+
+## V2 LAUNCH CHECKLIST (next instance)
+
+1. Boot VM, clone repo c95f445+, venv, deps, HF_TOKEN (see /tmp/vast_remote_boot.sh pattern)
+2. Upload data/v2/*.parquet (or re-run fetch_v2.py --v1-parquet train_all.parquet)
+   NOTE fetch gaps to fix: M4 came back AI-only (no human rows); RAID only landed
+   abstracts+books domains — check bucket sampling before trusting
+3. Resume WP generation (fetch_wp_prompts.py if needed → generate_ai_stories.py,
+   temps MUST be ≤1.0, single pipeline instance only) → merge_fictpair.py
+4. Memory probe: 500 steps at --max-len 2048 --batch-size 4, watch
+   torch.cuda.max_memory_allocated() (16GB card)
+5. Contrastive smoke: --smoke --contrastive 0.5, verify [ctr] pairs=N > 0
+6. Rubric labeling resumes from artifacts/v2_rubric jsonl (upload rescued file)
+7. LAUNCH (user approval): fine_tune_lfm.py --arch encoder \
+   --model LiquidAI/LFM2.5-Encoder-350M --spans-parquet data/v2/v2_train.labeled.parquet \
+   --max-len 2048 --batch-size 4 --grad-accum 9 --precision bf16 --optimizer adamw \
+   --contrastive 0.5 --epochs 1 --lr 2e-5 --ckpt-every 250 --out artifacts/lfm_v2
+8. Eval: eval_proper.py derives registers dynamically now; success bar = coai-style
+   paired slice ≥0.90 AND heldout files ≥0.85 AND unseen-generator not collapsed

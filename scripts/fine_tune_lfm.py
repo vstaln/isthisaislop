@@ -127,7 +127,7 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
         import pyarrow.parquet as pq
         # logical columns (spans is a single list column, not lane/start/end leaves)
         schema_names = set(pq.read_schema(spans_parquet).names)
-        cols = [c for c in ("text", "label", "pile", "register", "spans")
+        cols = [c for c in ("text", "label", "pile", "register", "spans", "split_hint")
                 if c in schema_names]
         if "register" not in cols:
             raise SystemExit(f"{spans_parquet}: missing 'register' column — rebuild with build_training_parquet.py (m3 fix)")
@@ -147,6 +147,8 @@ def load_rows(doc_parquet: Path | None, spans_parquet: Path | None, smoke: bool)
                     "label": parse_label(rec, default=0),
                     "register": reg,
                     "spans": _coerce_spans(rec.get("spans")),
+                    # pair key for contrastive training (absent in v1 parquets)
+                    "split_hint": rec.get("split_hint") or "",
                 })
         return rows
 
@@ -203,11 +205,20 @@ class EncoderDetector(nn.Module):
         self.doc = nn.Linear(hidden, 2)
         self.token = nn.Linear(hidden, n_lanes + 1)
 
-    def forward(self, input_ids, attention_mask):
+    def _encode(self, input_ids, attention_mask):
         states = self.body(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
         mask = attention_mask.unsqueeze(-1).to(states.dtype)
         pooled = (states * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
+        return states, pooled
+
+    def forward(self, input_ids, attention_mask):
+        states, pooled = self._encode(input_ids, attention_mask)
         return self.doc(pooled), self.token(states)
+
+    def forward_doc_embed(self, input_ids, attention_mask):
+        """Penultimate (pooled hidden) embedding + doc logits for contrastive loss."""
+        _, pooled = self._encode(input_ids, attention_mask)
+        return pooled, self.doc(pooled)
 
 
 def build_decoder(model_name: str):
@@ -280,6 +291,30 @@ def evaluate(model, loader, device, arch: str) -> tuple[list[float], list[int]]:
     return scores, labels
 
 
+class _MultiOptimizer:
+    """Step two optimizers together so one scheduler covers both groups."""
+
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+        self.param_groups = a.param_groups + b.param_groups
+        self.defaults = {}
+
+    def step(self, closure=None):
+        self.a.step()
+        self.b.step()
+
+    def zero_grad(self, set_to_none=True):
+        self.a.zero_grad(set_to_none)
+        self.b.zero_grad(set_to_none)
+
+    def state_dict(self):
+        return {"a": self.a.state_dict(), "b": self.b.state_dict()}
+
+    def load_state_dict(self, sd):
+        self.a.load_state_dict(sd["a"])
+        self.b.load_state_dict(sd["b"])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", choices=["encoder", "decoder"], default="encoder")
@@ -293,12 +328,19 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=Config.lr)
     ap.add_argument("--epochs", type=int, default=Config.epochs)
     ap.add_argument("--seed", type=int, default=Config.seed)
-    ap.add_argument("--precision", choices=["fp16", "fp32"], default=Config.precision)
+    ap.add_argument("--precision", choices=["fp16", "bf16", "fp32"], default=Config.precision)
+    ap.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw",
+                    help="muon = Moonshot-style hybrid: orthogonalized updates on matmul "
+                         "weights, AdamW on embeddings/conv/norm/heads")
+    ap.add_argument("--muon-lr", type=float, default=0.02,
+                    help="Muon group learning rate (AdamW groups keep --lr)")
     ap.add_argument("--ckpt-every", type=int, default=Config.ckpt_every)
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--cal-frac", type=float, default=0.05)
     ap.add_argument("--warmup-frac", type=float, default=0.1, help="fraction of steps for linear warmup (0=off)")
     ap.add_argument("--smoke", action="store_true", help="synthetic data, 3 steps, no corpus needed")
+    ap.add_argument("--contrastive", type=float, default=0.0,
+                    help="InfoNCE weight on same-prompt pairs (0=off; also gates per-step probability when <1)")
     args = ap.parse_args()
 
     cfg = Config(arch=args.arch, model=args.model, max_len=args.max_len, batch_size=args.batch_size,
@@ -312,8 +354,9 @@ def main() -> int:
     rows = load_rows(args.doc_parquet, args.spans_parquet, args.smoke)
     lanes = sorted({s["lane"] for r in rows for s in r["spans"]})
     # Schema check: register allowlist + label 0/1 (labels.py already raises on pile/label mismatch)
-    from slopdet.calibrate import ALLOWED_REGISTERS
-    bad_regs = {r["register"] for r in rows} - ALLOWED_REGISTERS
+    from slopdet.calibrate import ALLOWED_REGISTERS, register_allowed
+    bad_regs = {r["register"] for r in rows
+                if not register_allowed(r["register"])}
     if bad_regs:
         raise SystemExit(f"unknown register(s) {bad_regs} — fix ALLOWED_REGISTERS or data build")
     bad_labels = {r["label"] for r in rows} - {0, 1}
@@ -339,17 +382,104 @@ def main() -> int:
     random.Random(args.seed).shuffle(train_rows)
     print(f"[data] {len(train_rows)} train / {len(val_rows)} val / {len(cal_rows)} cal · {len(lanes)} lanes · registers {sorted({r['register'] for r in rows})}")
 
+    ctr_pairs: list[tuple[int, int]] = []
+    ctr_rng = random.Random(args.seed + 1)
+    if args.contrastive > 0.0:
+        from slopdet.pairs import build_pairs
+        ctr_pairs = build_pairs(train_rows)
+        print(f"[ctr] pairs={len(ctr_pairs)} usable", flush=True)
+
     tok = AutoTokenizer.from_pretrained(cfg.model, trust_remote_code=True)
     train_ds = SlopDataset(train_rows, tok, cfg.max_len, lanes)
     val_ds = SlopDataset(val_rows, tok, cfg.max_len, lanes)
     cal_ds = SlopDataset(cal_rows, tok, cfg.max_len, lanes) if cal_rows else None
-    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
-    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size)
-    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size) if cal_ds else None
+    train_dl = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False,
+                          num_workers=2, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+    val_dl = DataLoader(val_ds, batch_size=cfg.batch_size, num_workers=2, pin_memory=True)
+    cal_dl = DataLoader(cal_ds, batch_size=cfg.batch_size, num_workers=2, pin_memory=True) if cal_ds else None
 
     model = (EncoderDetector(cfg.model, len(lanes)) if cfg.arch == "encoder"
              else build_decoder(cfg.model)).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
+
+    # ---- optimizer: adamw (default) or moonshot-style hybrid muon ----
+    # Muon (Jordan et al. 2024; Moonshot AI 2502.16982): orthogonalized
+    # momentum updates on 2D matmul weights ONLY; embeddings, norms, heads,
+    # and conv weights stay on AdamW. Newton-Schulz runs in bf16 on GPU.
+    if args.optimizer == "muon":
+        import torch.nn.functional as F
+
+        @torch.no_grad()
+        def _zeropower_via_newtonschulz(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
+            a, b, c = (3.4445, -4.7750, 2.0315)
+            X = G.bfloat16()
+            transposed = False
+            if X.size(0) > X.size(1):
+                X = X.T
+                transposed = True
+            X = X / (X.norm() + 1e-7)
+            for _ in range(steps):
+                A = X @ X.T
+                B = b * A + c * A @ A
+                X = a * X + B @ X
+            if transposed:
+                X = X.T
+            return X
+
+        class Muon(torch.optim.Optimizer):
+            """DeepSeek-V4 spec (arxiv 2606.19348 §2.4): momentum 0.95,
+            weight decay 0.1, Newton-Schulz orthogonalization, update-matrix
+            RMS rescaled to 0.18 so the AdamW learning rate is reused directly."""
+
+            UPDATE_RMS = 0.18
+
+            def __init__(self, params, lr, momentum=0.95, weight_decay=0.1):
+                super().__init__(params, dict(lr=lr, momentum=momentum,
+                                              weight_decay=weight_decay))
+
+            @torch.no_grad()
+            def step(self):
+                for group in self.param_groups:
+                    for p in group["params"]:
+                        if p.grad is None:
+                            continue
+                        g = p.grad
+                        st = self.state[p]
+                        if "m" not in st:
+                            st["m"] = torch.zeros_like(g)
+                        m = st["m"]
+                        m.lerp_(g, 1 - group["momentum"])
+                        u = g.lerp_(m, group["momentum"])
+                        flat = u.flatten(1) if u.ndim > 2 else u
+                        if flat.ndim < 2:  # 1D param slipped in — momentum fallback
+                            p.mul_(1 - group["lr"] * group["weight_decay"])
+                            p.add_(u, alpha=-group["lr"])
+                            continue
+                        o = _zeropower_via_newtonschulz(flat).to(p.dtype)
+                        # RMS-rescale to 0.18 -> reuse AdamW lr (DeepSeek-V4)
+                        rms = o.float().pow(2).mean().sqrt().clamp_min(1e-12)
+                        o = o * (self.UPDATE_RMS / rms)
+                        p.mul_(1 - group["lr"] * group["weight_decay"])
+                        p.add_(o.reshape(p.shape), alpha=-group["lr"])
+
+        muon_params, adamw_params = [], []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            is_hidden_matmul = (p.ndim >= 2
+                                and name.split(".")[0] not in {"doc", "token"}
+                                and not any(k in name for k in
+                                            ("embed", "head", "norm", "classifier",
+                                             "doc_head", "lane_head", "conv")))
+            (muon_params if is_hidden_matmul else adamw_params).append(p)
+        n_mu = sum(p.numel() for p in muon_params)
+        n_ad = sum(p.numel() for p in adamw_params)
+        print(f"[opt] muon(dsv4) on {n_mu/1e6:.1f}M params (matmul weights), "
+              f"adamw on {n_ad/1e6:.1f}M (embed/conv/norm/heads)", flush=True)
+        opt = Muon(muon_params, lr=cfg.lr, weight_decay=0.1)
+        opt_adamw = torch.optim.AdamW(adamw_params, lr=cfg.lr, weight_decay=0.01)
+        opt = _MultiOptimizer(opt, opt_adamw)
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=0.01)
     # Warmup + cosine decay (M1 fix) — constant LR is a coin flip over 21k steps.
     total_opt_steps = max(1, len(train_dl) // cfg.grad_accum) * cfg.epochs
     warmup_steps = int(total_opt_steps * args.warmup_frac) if not args.smoke else 0
@@ -365,7 +495,8 @@ def main() -> int:
             cosine = CosineAnnealingLR(opt, T_max=max(1, total_opt_steps - warmup_steps))
             scheduler = SequentialLR(opt, [warm, cosine], milestones=[warmup_steps])
             print(f"[sched] fallback warmup {warmup_steps}/{total_opt_steps}", flush=True)
-    use_amp = cfg.precision == "fp16" and device.type == "cuda"
+    use_amp = cfg.precision in ("fp16", "bf16") and device.type == "cuda"
+    amp_dtype = torch.bfloat16 if cfg.precision == "bf16" else torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     doc_loss_fn = nn.CrossEntropyLoss()
     # K4 fix: class-balanced token loss. >99% of tokens are "no lane" (class 0),
@@ -374,7 +505,7 @@ def main() -> int:
     lane_ids = {lane: i + 1 for i, lane in enumerate(lanes)}  # 0 = no lane
     token_weights = torch.ones(len(lanes) + 1, device=device)  # +1 for class 0
     lane_counts = torch.zeros(len(lanes) + 1, device=device)
-    for r in rows:
+    for r in train_rows:  # train only — no holdout span statistics in the loss
         for s in r["spans"]:
             lid = lane_ids.get(s["lane"], 0)
             lane_counts[lid] += max(0, (s["end"] - s["start"]))
@@ -401,6 +532,19 @@ def main() -> int:
             if isinstance(_ck, dict) and "model" in _ck:
                 model.load_state_dict(_ck["model"])
                 _resume_step = int(_ck.get("step", 0))
+                # restore full training state so resume == uninterrupted run
+                try:
+                    if "opt" in _ck:
+                        opt.load_state_dict(_ck["opt"])
+                    if scheduler is not None and _ck.get("scheduler"):
+                        scheduler.load_state_dict(_ck["scheduler"])
+                    if _ck.get("scaler"):
+                        scaler.load_state_dict(_ck["scaler"])
+                    if _ck.get("rng") is not None:
+                        torch.set_rng_state(_ck["rng"])
+                    print("[resume] restored optimizer/scheduler/scaler/rng state", flush=True)
+                except Exception as _re:
+                    print(f"[resume] WARNING: training-state restore failed ({_re}) — continuing with fresh state", flush=True)
                 print(f"[resume] loaded checkpoint step {_resume_step} from {_resume_ckpt}", flush=True)
             del _ck; gc.collect()
         except Exception as e:
@@ -422,7 +566,7 @@ def main() -> int:
             ids = batch["input_ids"].to(device)
             mask = batch["attention_mask"].to(device)
             doc_y = batch["doc_label"].to(device)
-            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            with torch.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
                 if cfg.arch == "encoder":
                     doc_logits, token_logits = model(ids, mask)
                     token_y = batch["token_labels"].to(device).masked_fill(mask == 0, -100)
@@ -430,6 +574,24 @@ def main() -> int:
                         token_logits.reshape(-1, token_logits.size(-1)), token_y.reshape(-1))
                 else:
                     loss = doc_loss_fn(model(input_ids=ids, attention_mask=mask).logits, doc_y)
+                # Same-prompt InfoNCE: with prob min(1.0, contrastive), pull paired
+                # human/AI embeddings apart via diag-correct cross-entropy over the
+                # N x N cosine sim matrix. Falls back to normal loss silently when
+                # <2 pairs exist or flag is off.
+                if ctr_pairs and cfg.arch == "encoder" and ctr_rng.random() < min(1.0, args.contrastive):
+                    n = min(len(ctr_pairs), max(cfg.batch_size // 2, 2))
+                    if n >= 2:
+                        samp = ctr_rng.sample(ctr_pairs, n)
+                        h_enc = tok([train_rows[i]["text"] for i, _ in samp], padding=True, truncation=True,
+                                    max_length=cfg.max_len, return_tensors="pt").to(device)
+                        a_enc = tok([train_rows[j]["text"] for _, j in samp], padding=True, truncation=True,
+                                    max_length=cfg.max_len, return_tensors="pt").to(device)
+                        h_emb, _ = model.forward_doc_embed(h_enc["input_ids"], h_enc["attention_mask"])
+                        a_emb, _ = model.forward_doc_embed(a_enc["input_ids"], a_enc["attention_mask"])
+                        sim = nn.functional.normalize(h_emb.float(), dim=-1) @ \
+                              nn.functional.normalize(a_emb.float(), dim=-1).t() / 0.07
+                        ctr_loss = nn.functional.cross_entropy(sim, torch.arange(n, device=device)) * args.contrastive
+                        loss = loss + ctr_loss
             if not torch.isfinite(loss):
                 raise SystemExit(
                     "[abort] non-finite loss. On Turing (T4) fp16 is the usual cause: rerun with "
@@ -449,7 +611,11 @@ def main() -> int:
                 print(f"[train] epoch {epoch} step {step}/{max_steps} loss {loss.item():.4f} lr {opt.param_groups[0]['lr']:.2e}", flush=True)
             if cfg.ckpt_every and step % cfg.ckpt_every == 0:
                 _tmp_ckpt = args.out / "checkpoint.tmp"
-                torch.save({"step": step, "model": model.state_dict()}, _tmp_ckpt)
+                torch.save({"step": step, "model": model.state_dict(),
+                            "opt": opt.state_dict(),
+                            "scheduler": scheduler.state_dict() if scheduler else None,
+                            "scaler": scaler.state_dict(),
+                            "rng": torch.get_rng_state()}, _tmp_ckpt)
                 import os as _os; _os.replace(_tmp_ckpt, args.out / "checkpoint.pt")
                 # auto HF backup every ckpt (VM -> HF durable, survives prune)
                 try:
@@ -466,7 +632,8 @@ def main() -> int:
                     v_auroc = _gated_auroc(v_scores, v_labels)
                     if v_auroc == v_auroc and v_auroc > best_auroc:  # not nan
                         best_auroc = v_auroc
-                        torch.save({"step": step, "model": {k: v.cpu() for k, v in model.state_dict().items()}, "auroc": best_auroc}, args.out / "best.pt")
+                        best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                        torch.save({"step": step, "model": best_state, "auroc": best_auroc}, args.out / "best.pt")
                         print(f"[ckpt] new best val AUROC {best_auroc:.4f} at step {step}", flush=True)
             if step >= max_steps:
                 break

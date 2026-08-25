@@ -1,0 +1,153 @@
+{
+  "taxonomy_metadata": {
+    "name": "slop-detector v2 LLM-judge rubric",
+    "version": "0.2.0-draft",
+    "methodology": "Condensed adaptation of StoryScope's 304-feature narrative taxonomy (research/storyscope_taxonomy.json) to general-prose slop detection. StoryScope scores HOW a story is built across 10 dimensions; we keep that philosophy but reduce to 14 questions one judge call can score per document.",
+    "design_constraints": [
+      "One LLM call per document; whole rubric must fit a system prompt (<1200 words). See research/taxonomy_v2_system_prompt.txt.",
+      "Covers HOW text is built (structure/narrative/discourse), not word tics -- surface tics stay in ontology/patterns.core.yaml regex lanes.",
+      "Must be register-agnostic where possible: fiction, QA answers, wiki intros, reddit/blogs prose, arxiv paraphrases.",
+      "Output conventions mirror scripts/label_v2_llm.py: single JSON object, verdict/confidence/rubric/spans."
+    ],
+    "registers": {
+      "fiction": "storyscope-style stories + writingprompts + gutenberg (human side)",
+      "qa": "HC3 question-answer answers",
+      "web": "wiki intros, reddit posts, blog prose",
+      "academic": "arxiv abstracts/intros, coai/M4 paraphrase sets"
+    },
+    "scale_convention": "All questions scored 0-4 by the judge unless noted. slop_direction 'high' means higher score => more AI-like; 'low' means lower score => more AI-like."
+  },
+
+  "questions": [
+    {
+      "id": "structural_uniformity",
+      "dimension": "structure",
+      "question": "How uniform are paragraph lengths and internal structure (0=highly varied and purposeful, 4=all paragraphs near-identical size and shape)?",
+      "detection_method": "Compare paragraph lengths and openings across the doc; check whether each paragraph plays a distinct rhetorical role or whether they rhythmically repeat (setup, elaboration, wrap). Uniform machine-gun paragraphs score high.",
+      "applies_to": "all",
+      "slop_direction": "high"
+    },
+    {
+      "id": "burstiness_variance",
+      "dimension": "structure",
+      "question": "How much variance is there in sentence length and syntax (0=monotone even sentences, 4=wild, purposeful mix of fragments, long runs, short punches)?",
+      "detection_method": "Sample 15-20 sentences; estimate the spread between shortest and longest and how often syntax repeats subject-verb-object. Human prose bursts; LLM prose glides at a steady clip. Low variance scores low.",
+      "applies_to": "all",
+      "slop_direction": "low"
+    },
+    {
+      "id": "listiness_parallelism",
+      "dimension": "structure",
+      "question": "How heavily does the text lean on lists, triads, and parallel constructions ('X, Y, and Z' rhythms, bullet-like enumeration in prose) beyond what content requires (0=organic, 4=pervasive)?",
+      "detection_method": "Count rule-of-three groupings, semicolon chains, and grammatically parallel clause strings per paragraph; rate whether they feel motivated by content or inserted as filler symmetry. Pervasive unforced parallelism scores high.",
+      "applies_to": "all",
+      "slop_direction": "high"
+    },
+    {
+      "id": "specificity_concreteness",
+      "dimension": "style",
+      "question": "How concrete is the detail (0=vague abstraction throughout, 4=rich specific names, numbers, sensory particulars)?",
+      "detection_method": "Check whether claims and scenes are anchored in specifics (real nouns, quantities, sensory detail) or float on abstractions ('various factors', 'a sense of wonder'). Vague-generic texture scores low.",
+      "applies_to": "all",
+      "slop_direction": "low"
+    },
+    {
+      "id": "emotional_calibration",
+      "dimension": "style",
+      "question": "How evenly calibrated is the emotional temperature (0=genuinely uneven, surging or flat where content demands, 4=tastefully modulated everywhere, never too hot or cold)?",
+      "detection_method": "Judge whether emotional intensity tracks the events or sits at a constant pleasant middle register; note tell-over-feel moves like naming emotions ('she felt a mixture of excitement and apprehension'). Constant tasteful modulation scores high.",
+      "applies_to": "all",
+      "slop_direction": "high"
+    },
+    {
+      "id": "authorial_presence",
+      "dimension": "style",
+      "question": "How strong is an individual authorial voice (0=no discernible person behind the words, 4=distinct opinions, quirks, stake, idiosyncrasies)?",
+      "detection_method": "Ask: could this plausibly be anyone? Look for personal stance, humor, asymmetries, willingness to be odd or wrong. Interchangeable competent-neutral voice scores low. (Wiki intros legitimately lack voice; grade relative to register norm.)",
+      "applies_to": "all",
+      "slop_direction": "low"
+    },
+    {
+      "id": "discourse_markers",
+      "dimension": "discourse",
+      "question": "How formulaic are transitions and signposting ('Moreover', 'In conclusion', 'It's important to note', 'Let's delve into') relative to register norms (0=natural flow, 4=textbook scaffolding everywhere)?",
+      "detection_method": "List transition words and meta-discourse phrases at paragraph and section boundaries; judge whether they carry real logical weight or are decorative connective tissue. Dense stock scaffolding scores high.",
+      "applies_to": "all",
+      "slop_direction": "high"
+    },
+    {
+      "id": "epistemic_hedging",
+      "dimension": "discourse",
+      "question": "How saturated is the text in balanced hedging ('can vary', 'may depend', 'it's worth noting', on-the-one-hand framing) beyond genuine uncertainty (0=commits to claims appropriately, 4=hedges everything symmetrically)?",
+      "detection_method": "Count hedge constructions and both-sides balances; ask whether the hedging reflects actual epistemic state or reflexive caution. Blanket symmetric hedging absent real stakes scores high.",
+      "applies_to": ["qa", "web", "academic"],
+      "slop_direction": "high"
+    },
+    {
+      "id": "recap_redundancy",
+      "dimension": "discourse",
+      "question": "How much does the text restate what it already said (mini-summaries, 'in other words' loops, conclusion restating intro verbatim-ish) (0=tight, additive prose, 4=heavy redundancy)?",
+      "detection_method": "Track propositional content; flag passages whose information was already delivered earlier, especially intro-conclusion mirroring and end-of-paragraph recaps. High redundant restatement scores high.",
+      "applies_to": ["qa", "web", "academic"],
+      "slop_direction": "high"
+    },
+    {
+      "id": "pacing_evenness",
+      "dimension": "narrative",
+      "question": "How even is narrative pacing across scenes (0=dramatically varied -- acceleration, dilation, jump-cuts driven by story logic, 4=steady metronome coverage event after event)?",
+      "detection_method": "Map time-to-text ratio across the piece; humans compress and dilate unevenly around turning points, LLM narrators allot similar space to each beat. Metronome coverage scores high.",
+      "applies_to": ["fiction"],
+      "slop_direction": "high"
+    },
+    {
+      "id": "interiority_depth",
+      "dimension": "narrative",
+      "question": "How deep and specific is character interiority (0=no inner life or generic labeled feelings, 4=particular, contradictory, oblique thought)?",
+      "detection_method": "Collect every passage inside a character's head; check whether thoughts are specific, tangled, and oblique or generic named emotions stated flatly ('he was nervous', 'she felt determined'). Generic or absent interiority scores low.",
+      "applies_to": ["fiction"],
+      "slop_direction": "low"
+    },
+    {
+      "id": "scene_summary_ratio",
+      "dimension": "narrative",
+      "question": "Does the piece dramatize (scene: dialogue, concrete moment, real-time action) or summarize (0=largely vivid scene, 4=almost entirely told summary/reportage)?",
+      "detection_method": "Classify each major beat as scene (unfolds in real time with sensory/dialogue grounding) or summary (events recounted). A story that tells its events rather than staging them scores high.",
+      "applies_to": ["fiction"],
+      "slop_direction": "high"
+    },
+    {
+      "id": "closure_neatness",
+      "dimension": "narrative",
+      "question": "How neatly does the ending resolve (0=messy, partial, or resonant-without-summary ending, 4=bows tied: lesson stated, arc closed, final line lands like a stamp)?",
+      "detection_method": "Read only the last two paragraphs: does it close every opened thread, moralize, or echo the opening? Over-resolved, lesson-delivering endings score high.",
+      "applies_to": ["fiction", "web"],
+      "slop_direction": "high"
+    },
+    {
+      "id": "cliche_density",
+      "dimension": "lexicon",
+      "question": "How dense are stock phrases, dead metaphors, and expected collocations ('little did she know', 'testament to', 'tapestry', 'delve') per 100 words (0=fresh phrasing, 4=cliché-saturated)?",
+      "detection_method": "Underline every phrase you predicted before reading it; estimate density of predictable collocations and worn figurative language against the doc's length and register. High predicted-phrase density scores high.",
+      "applies_to": "all",
+      "slop_direction": "high"
+    }
+  ],
+
+  "register_variant_map": {
+    "comment": "Which questions the judge should answer per register. Questions outside the map are skipped (return null) to keep scoring fair across registers.",
+    "fiction": ["structural_uniformity", "burstiness_variance", "listiness_parallelism", "specificity_concreteness", "emotional_calibration", "authorial_presence", "discourse_markers", "cliche_density", "pacing_evenness", "interiority_depth", "scene_summary_ratio", "closure_neatness"],
+    "qa": ["structural_uniformity", "burstiness_variance", "listiness_parallelism", "specificity_concreteness", "emotional_calibration", "authorial_presence", "discourse_markers", "epistemic_hedging", "recap_redundancy", "closure_neatness"],
+    "web": ["structural_uniformity", "burstiness_variance", "listiness_parallelism", "specificity_concreteness", "emotional_calibration", "authorial_presence", "discourse_markers", "epistemic_hedging", "recap_redundancy", "closure_neatness"],
+    "academic": ["structural_uniformity", "burstiness_variance", "listiness_parallelism", "specificity_concreteness", "discourse_markers", "epistemic_hedging", "recap_redundancy"]
+  },
+
+  "output_schema": {
+    "description": "Single JSON object per document, no prose. Conventions match scripts/label_v2_llm.py SYSTEM block (verdict/confidence/spans) extended with the rubric dict keyed by question id.",
+    "fields": {
+      "verdict": {"type": "enum", "values": ["human", "ai", "mixed"], "notes": "'mixed' only if the doc genuinely interleaves human and AI prose"},
+      "confidence": {"type": "float", "range": [0.0, 1.0], "notes": "calibrated certainty in the verdict, not average rubric score"},
+      "rubric": {"type": "object", "keys": "question ids applicable to the register (see register_variant_map); unanswered questions omitted or null", "value_type": "int 0-4"},
+      "spans": {"type": "array", "max_items": 5, "items": {"quote": "verbatim substring of the doc, <=200 chars", "why": "one-clause reason citing the question id or pattern"}}
+    }
+  }
+}
