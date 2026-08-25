@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import random
+
+import pytest
+
 from slopdet.span import pure_docs, stitch_docs
 
 
@@ -32,33 +35,44 @@ def test_calibration_docs_are_pure_source_not_stitched():
     assert all({lab for _, _, lab in d["sentences"]} == {1} for d in ai)
 
 
-def test_span_offsets_match_quotes():
-    """Span start/end must slice the source text back to the quote verbatim."""
-    import json
+def test_span_offsets_slice_back_to_the_quote(tmp_path):
+    """Span start/end must slice the source text back to the quote verbatim.
 
-    import pandas as pd
-
+    This used to read `/tmp/label_artem9k/part_*.parquet` — one machine's scratch
+    output from a v1 labeling run — and return silently when it was absent, so it
+    asserted nothing anywhere else. It builds its own fixture now.
+    """
     import sys
     from pathlib import Path
 
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     from build_training_parquet import load_spans
 
-    parts = sorted(Path("/tmp/label_artem9k").glob("part_*.parquet"))
-    if not parts:
-        return  # labeling not running; skip silently
-    merged = pd.concat(pd.read_parquet(p) for p in parts[:3]).reset_index(drop=True)
-    merged = merged[["id", "text", "label", "pile", "spans", "slop_tags", "human_tags"]]
-    test_path = Path("/tmp/test_artem9k_offsets.parquet")
-    merged.to_parquet(test_path)
-    df = load_spans(test_path, "pile")
-    bad = 0
-    checked = 0
-    for rec in df.to_dict("records"):
-        txt = rec["text"]
-        for s in rec["spans"]:
-            checked += 1
-            if not (0 <= s["start"] < s["end"] <= len(txt)):
-                bad += 1
-    assert bad == 0, f"{bad}/{checked} spans out of bounds"
-    assert checked > 0
+    text = "We leverage robust pipelines. Thursday at 3pm I counted 41 chairs."
+    source = tmp_path / "spans.parquet"
+    pd.DataFrame([{
+        "text": text,
+        "pile": 1,
+        "spans": [
+            {"lane": "style", "start": text.index("leverage"),
+             "end": text.index("leverage") + len("leverage"), "quote": "leverage"},
+            {"lane": "construction", "start": text.index("41 chairs"),
+             "end": text.index("41 chairs") + len("41 chairs"), "quote": "41 chairs"},
+            # dropped: no lane, and offsets missing
+            {"lane": None, "start": 0, "end": 2, "quote": "We"},
+            {"lane": "style", "start": None, "end": None, "quote": ""},
+        ],
+    }]).to_parquet(source)
+
+    rows = load_spans(source, "pile").to_dict("records")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 1
+    assert rows[0]["register"] == "pile"
+
+    spans = rows[0]["spans"]
+    assert len(spans) == 2, "spans without a lane or offsets must be dropped"
+    for span, quote in zip(spans, ("leverage", "41 chairs")):
+        assert 0 <= span["start"] < span["end"] <= len(text)
+        assert text[span["start"]:span["end"]] == quote
