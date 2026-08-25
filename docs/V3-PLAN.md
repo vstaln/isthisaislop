@@ -60,8 +60,10 @@ safetensors only — GGUF ✗, MLX ✗, ONNX ✗. Every quantized artifact Liqui
 confusingly-named `LFM2.5-230M`, which is a different model from `LFM2.5-Encoder-230M`. And you
 can't fine-tune INT4/INT8 weights directly — quantized formats are inference containers. The plan:
 
-1. **Train** in bf16 on the CUDA box (fp16+preflight if the card is pre-Ampere), full fine-tune —
-   230M fits easily, no LoRA needed.
+1. **Train** in bf16 on a vast.ai box — 3090 (24 GB) or 4070 Ti Super (16 GB), both Ampere+ so bf16
+   and FA2 just work (resolves O1). Full fine-tune, no LoRA: ESTIMATE ~3.7 GB for weights+grads+Adam
+   at 230M, leaving room for batch 48–64 @512 tok on the 3090, 32–48 on the 4070 TiS. A weekend run
+   is ~$10–20 of vast time (ESTIMATE).
 2. **Quantize after training**: ONNX INT8 dynamic. Pipeline already proven on this exact body —
    MEASURED: 230.4 MB, 371 ms/512 tok on 4 vCPU threads (`artifacts/export_probe.json`).
 3. **Gate**: quantized vs fp32 AUROC delta ≤ 1 point on every eval slice. If it fails, escalate in
@@ -157,8 +159,8 @@ score the full human pile, take the top-FPR 5k docs and the `antislop`/`humanize
 upweight 3× in round 2. Seeds, git sha, data sha256 in the manifest per run; checkpoint + HF push
 every 1000 steps (already wired: `c95f445`).
 
-ESTIMATE compute: ~350k docs → ~500k windows/epoch → 2–4 h/epoch bf16 on a modern 24 GB card, 2
-epochs + a mining round ≈ a weekend of box time. Nothing here needs more than the CUDA box.
+ESTIMATE compute: ~350k docs → ~500k windows/epoch → 2–4 h/epoch bf16 on the 3090, a bit more on the
+4070 TiS, 2 epochs + a mining round ≈ a weekend of box time. Nothing here needs more than one card.
 
 ## 4. Segmentation + why-layer (inference-side design)
 
@@ -192,7 +194,27 @@ Baselines in every report: the CPU logistic floor, and the deterministic ontolog
 neural spans don't beat regex spans on IoU, we ship regex and say so (the handoff's stop-condition,
 still binding).
 
-## 6. Shipped bundle
+## 6. Phone deployment (the actual requirement)
+
+The detector runs **on the phone**, not on a server. Constraints and the plan that satisfies them:
+
+- **Runtime**: ONNX Runtime Mobile, XNNPACK EP, mmap'd model load. One artifact serves Android, iOS
+  (CPU/CoreML EP) and the desktop eval harness, which is why ORT beat ExecuTorch here. Inference is
+  burst-shaped (score a selection, sleep), so thermals and battery are non-issues; no sustained load.
+- **Size budget: ≤250 MB** in the app. INT8 dynamic already lands at 230.4 MB (MEASURED). If the app
+  needs smaller, the ladder is: prune the 65k multilingual vocab to the English subset actually seen
+  in training (embedding is 67M of the 230M params; CONJECTURED saving ~40–50 MB, needs a tokenizer
+  round-trip check) → Q4 weights via ORT MatMulNBits (~130 MB, ESTIMATE) — every rung gated on the
+  same ≤1pt AUROC rule. Ship over Wi-Fi as a post-install download, not inside the APK.
+- **Latency budget (default target until O3 names a device): mid-range Android, Snapdragon
+  7-series/8 GB.** Gates: ≤700 ms per 512-token window on that class of device, cold load ≤2 s,
+  a typical selection (≤3 windows) fully scored ≤2 s. The 371 ms/512-tok on 4 vCPU threads (MEASURED)
+  suggests flagships will be comfortably under; the mid-range number must be measured on-device in
+  phase Q, not extrapolated.
+- **Everything else in the bundle is tiny**: ontology + ratios + calibration + tokenizer ≈ a few MB.
+  The why-layer costs nothing at inference beyond regex over the selection.
+
+## 7. Shipped bundle
 
 `artifacts/itais-v3/`: `detector.int8.onnx` + tokenizer + `calibration.json` (τ_hi/τ_lo + doc
 threshold per register) + `ontology_ratios.json` (pattern → overrepresentation ratio) + `manifest.json`
@@ -200,7 +222,7 @@ threshold per register) + `ontology_ratios.json` (pattern → overrepresentation
 License v1.0) + model card with the copy rules and known failure modes (attacked text, post-era FPR,
 L2 numbers) stated as measured.
 
-## 7. Execution order
+## 8. Execution order
 
 | Phase | Work | Depends on | Gate |
 |---|---|---|---|
@@ -209,16 +231,17 @@ L2 numbers) stated as measured.
 | D2 | hybrid stitching + span labels (§2.3) | D1 partial | G2 boundary probe |
 | T1 | 3-head training, 2 epochs + mining round (§3) | D0 minimum; better after D2 | beats CPU floor on mixed slices |
 | T2 | ablations: boundary head on/off, 350M vs 230M if plateau | T1 | each component earns its keep or dies |
-| Q | INT8 export + AUROC-delta gate (§1) | T1 | ≤ 1 pt |
+| Q | INT8 export + AUROC-delta gate (§1) + on-device latency check (§6) | T1 | ≤ 1 pt; §6 budgets |
 | E | full eval report + model card + bundle (§5–6) | Q | every number sliced, classed, and in the manifest |
 
 D1 runs unattended for days and blocks nothing: T1 can start on D0-fixed data and retrain when D1/D2
 land. First trainable milestone is D0+T1 alone — that already answers "does the encoder beat the
 floor on an honest corpus", which is the question v2 couldn't ask.
 
-## 8. Open items
+## 9. Open items
 
-- **O1**: CUDA box GPU model/VRAM → decides bf16 vs fp16-preflight and batch size. One `nvidia-smi` answers it.
+- ~~O1~~ **resolved 2026-08-25**: vast.ai 3090 / 4070 Ti Super — Ampere+, bf16, batch sizes in §3.
 - **O2**: gateway request budget for ~125k generations → decides whether the method matrix runs full or in the priority order above.
-- **O3**: target phone for the latency budget (still open from the handoff; the 371 ms/512-tok vCPU number is a proxy).
+- **O3**: exact target phone still unnamed → §6 sets a mid-range-Android default budget; naming a
+  device only tightens the numbers, it doesn't block any phase before Q.
 - **O4**: PERSUADE licence conflict (CC BY vs BY-NC-SA) — eval-only until resolved.
