@@ -1,0 +1,101 @@
+{
+  "built_from": "/tmp/v2_train.parquet",
+  "v3_full_probes": {
+    "rows": 221538,
+    "registers": 18,
+    "single_label_registers": 0,
+    "share_single_label": 0.0,
+    "register_only_auroc": 0.83,
+    "length_only_auroc": 0.747,
+    "median_words": {
+      "human": 244.0,
+      "ai": 111.0
+    }
+  },
+  "v3_balanced_probes": {
+    "rows": 116775,
+    "registers": 18,
+    "single_label_registers": 0,
+    "share_single_label": 0.0,
+    "register_only_auroc": 0.536,
+    "length_only_auroc": 0.536,
+    "median_words": {
+      "human": 155.0,
+      "ai": 134.0
+    }
+  },
+  "per_register_balanced": {
+    "beemo": {
+      "n": 3406,
+      "ai": 0.5
+    },
+    "blogs": {
+      "n": 2700,
+      "ai": 0.444
+    },
+    "coai": {
+      "n": 17514,
+      "ai": 0.5
+    },
+    "gutenberg": {
+      "n": 3000,
+      "ai": 0.5
+    },
+    "hc3_finance": {
+      "n": 4414,
+      "ai": 0.5
+    },
+    "hc3_medicine": {
+      "n": 1697,
+      "ai": 0.349
+    },
+    "hc3_open_qa": {
+      "n": 1385,
+      "ai": 0.736
+    },
+    "hc3_reddit_eli5": {
+      "n": 3496,
+      "ai": 0.5
+    },
+    "hc3_wiki_csai": {
+      "n": 1707,
+      "ai": 0.574
+    },
+    "m4_arxiv": {
+      "n": 7998,
+      "ai": 0.5
+    },
+    "m4_peerread": {
+      "n": 4460,
+      "ai": 0.5
+    },
+    "m4_reddit": {
+      "n": 8000,
+      "ai": 0.5
+    },
+    "m4_wikihow": {
+      "n": 8000,
+      "ai": 0.5
+    },
+    "m4_wikipedia": {
+      "n": 7998,
+      "ai": 0.5
+    },
+    "raid_abstracts": {
+      "n": 1646,
+      "ai": 0.911
+    },
+    "raid_books": {
+      "n": 1646,
+      "ai": 0.911
+    },
+    "wiki_intro": {
+      "n": 29086,
+      "ai": 0.5
+    },
+    "writingprompts": {
+      "n": 8622,
+      "ai": 0.5
+    }
+  }
+}
