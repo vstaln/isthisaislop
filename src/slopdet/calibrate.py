@@ -17,15 +17,20 @@ def threshold_at_fpr(human_scores: list[float], fpr: float = 0.01) -> float:
 # Registry of registers that may appear in training parquets (K3 gate).
 # v1: coai/pile/storyscope/gutenberg/blogs/scp/writingprompts.
 # v2 adds prefixed families (raid_*, m4_*, hc3_*, wiki_intro*, beemo*,
-# semeval_mixed) — matched by prefix so new domains need no code change.
+# semeval_mixed) — matched by prefix so new domains need no code change — and the
+# contrastive generations, which scripts/merge_all_gen.py names '<method>_pair'
+# (rewrite_pair, respond_pair, direct_pair) from the generation record's mode.
 ALLOWED_REGISTERS = frozenset({"coai", "pile", "storyscope", "gutenberg", "blogs",
                                "scp", "writingprompts", "smoke"})
 ALLOWED_REGISTER_PREFIXES = ("raid_", "m4_", "hc3_", "wiki_intro", "beemo",
                              "semeval_mixed", "fictpair")
+ALLOWED_REGISTER_SUFFIXES = ("_pair",)
 
 
 def register_allowed(reg: str) -> bool:
-    return reg in ALLOWED_REGISTERS or reg.startswith(ALLOWED_REGISTER_PREFIXES)
+    return (reg in ALLOWED_REGISTERS
+            or reg.startswith(ALLOWED_REGISTER_PREFIXES)
+            or reg.endswith(ALLOWED_REGISTER_SUFFIXES))
 
 
 def human_percentile(score: float, human_scores: list[float]) -> float:

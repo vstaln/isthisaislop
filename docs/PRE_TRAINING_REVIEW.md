@@ -1,5 +1,10 @@
 # ITAIS — Pre-Training Review Request (for an expert reviewer)
 
+> **HISTORICAL — v1, 2026-08-18.** This is the review request that produced
+> `research/notes/brutal-review.md` and the K1–K5 / M1–M4 fixes. The v1 run it
+> describes happened and failed; see the V1 POSTMORTEM in `docs/HANDOFF.md`.
+> The current plan is v2 — do not build from this file.
+
 **You are being asked to critique a plan before a ~3.6h T4 training run.**
 Be brutally honest. Everything below is verified against the repo (git `5eb90ff`).
 The goal: catch anything that will produce a garbage model, wasted GPU time, or false confidence —

@@ -1,25 +1,52 @@
 #!/usr/bin/env python3
-"""Train the CPU matches_ai_pile scorer on coai. No GPU."""
+"""Train the CPU matches_ai_pile scorer on coai. No GPU.
+
+This is the floor a neural model has to beat (docs/HANDOFF.md NEXT-1): ontology
+hit counts into a logistic regression, calibrated at 1% FPR on the human slice.
+
+    uv run python scripts/train_cpu_scorer.py
+"""
 
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "notebooks"))
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from colab_pipeline import load_coai
 from slopdet.calibrate import calibration_record
 from slopdet.ontology import load_ontology
 from slopdet.scorer import N_EXTRA, default_bundle_path, featurize
+
+COAI_BASE = "https://huggingface.co/datasets/coai/ai-text-detection-training/resolve/main/data"
+COAI_FILES = {"train": "train-00000-of-00001.parquet", "test": "test-00000-of-00001.parquet"}
+
+
+def load_coai(data_dir: Path) -> dict[str, list[dict]]:
+    """Download (once, cached in data_dir) and load the coai train/test splits."""
+    import pandas as pd
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[str, list[dict]] = {}
+    for split, fname in COAI_FILES.items():
+        dest = data_dir / f"coai_{split}.parquet"
+        if not dest.exists():
+            print("downloading coai", split, fname)
+            with urlopen(f"{COAI_BASE}/{fname}") as response, dest.open("wb") as fh:
+                fh.write(response.read())
+        df = pd.read_parquet(dest)
+        out[split] = [{"text": str(text), "label": int(label)}
+                      for text, label in zip(df["text"], df["label"])]
+        print(split, len(out[split]), "docs")
+    return out
 
 
 def main() -> None:

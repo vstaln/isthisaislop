@@ -1,11 +1,12 @@
 {
-  "revision": "handoff rev 2",
+  "revision": "handoff rev 3",
   "git_sha": "bca62b6",
-  "date": "2026-08-18",
+  "date": "2026-08-25",
   "measured": {
     "tests": {
-      "command": "python -m pytest -q",
-      "result": "31 passed"
+      "command": "uv run python -m pytest -q",
+      "result": "67 passed",
+      "date": "2026-08-25"
     },
     "export_gate": {
       "command": "uv run python scripts/export_onnx.py --probe",
@@ -34,8 +35,10 @@
       "caveat": "latency is 4 cloud-vCPU threads, not a phone; INT8 drift measured with untrained heads"
     },
     "trainer_smoke": {
-      "command": "python scripts/fine_tune_lfm.py --arch encoder --smoke --precision fp32",
-      "result": "3 steps, 18 s, CPU, bundle + calibration + manifest written"
+      "command": "uv run python scripts/fine_tune_lfm.py --arch encoder --smoke",
+      "result": "3 steps, 144 s, 4 cloud vCPU, LFM2.5-Encoder-350M, bundle + calibration + manifest written",
+      "date": "2026-08-25",
+      "note": "the older '18 s' figure was the 230M body at fp32; the default is now 350M"
     },
     "encoder_loading_trap": {
       "command": "AutoModel vs AutoModelForMaskedLM with output_loading_info=True",
@@ -51,12 +54,52 @@
       "auc": 0.8643,
       "acc": 0.7675,
       "threshold": 0.8917,
-      "date": "2026-08-19"
+      "date": "2026-08-19",
+      "note": "the recorded command carried --eval-only --report; the script has no argparse, run it as `uv run python scripts/train_cpu_scorer.py`"
+    },
+    "v2_corpus": {
+      "command": "slopdet.corpus.load_rows(corpus.resolve(...)) on vstalingrady/itais/v2_train_labeled.parquet",
+      "date": "2026-08-25",
+      "rows": 222067,
+      "human": 115571,
+      "ai": 106496,
+      "registers": 27,
+      "load_seconds": 3.4,
+      "lanes": [
+        "construction",
+        "rhetorical",
+        "storyscope",
+        "style"
+      ],
+      "rows_with_spans": 11837,
+      "joinable_pairs": 25424
+    },
+    "pair_safe_split": {
+      "command": "slopdet.pairs.split_rows(rows, 0.05, 0.05, 0) on the v2 corpus",
+      "date": "2026-08-25",
+      "split": {
+        "train": 199805,
+        "val": 11117,
+        "cal": 11145
+      },
+      "straddling_families": 0,
+      "before_fix": {
+        "straddling_families": 4715,
+        "contaminated_eval_rows": 4634
+      },
+      "note": "row-wise split put 21% of eval rows in the same pair family as a training row"
+    },
+    "auroc_regression": {
+      "command": "slopdet.metrics.auroc vs sklearn.metrics.roc_auc_score, 6 cases incl. all-ties",
+      "date": "2026-08-25",
+      "result": "exact match",
+      "note": "the replaced eval_trained.auroc returned 1.0 for perfect, inverted and random rankings alike"
     }
   },
   "not_yet_recorded": {
     "cpu_logistic_floor": "NEXT-1: coai-test AUROC of artifacts/sklearn_bundle.json",
     "trained_model": "no neural model trained yet",
-    "on_device_latency": "B2: needs target phone"
+    "on_device_latency": "B2: needs target phone",
+    "v1_eval_proper": "RETRACTED: artifacts/eval_proper/report.json was computed with the broken AUROC; re-measure with slopdet.metrics if the v1 weights still exist"
   }
 }

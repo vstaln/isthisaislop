@@ -2,11 +2,14 @@
 
 Exports the encoder body plus our doc/token heads to ONNX, quantizes to INT8 dynamic, then reports
 logit drift and CPU latency. Runs on CPU in minutes with untrained heads — the point is to retire the
-deployment risk *before* spending Colab time on training.
+deployment risk *before* spending GPU hours on training.
 
-    uv run python scripts/export_onnx.py --arch encoder --probe
+    uv run python scripts/export_onnx.py --probe                      # untrained heads
+    uv run python scripts/export_onnx.py --ckpt artifacts/lfm_v2/model.pt   # real weights
 
 Writes artifacts/export_probe.json and exits nonzero if export, quantization or the drift check fails.
+scripts/eval_trained.py --quantize reuses `export_graph` and `latency_ms` from here so the trained-weight
+drift number is produced by exactly this code path.
 """
 
 from __future__ import annotations
@@ -21,30 +24,15 @@ import torch
 from torch import nn
 from transformers import AutoTokenizer
 
-from slopdet.lfm import load_encoder_body
+from slopdet.detector import DetectorBundle, from_checkpoint
 
 DEFAULT_MODEL = "LiquidAI/LFM2.5-Encoder-350M"
-N_LANES = 8
+# Lane count for a probe run with untrained heads. A real checkpoint carries its
+# own count and --ckpt reads it off the weights instead of guessing.
+PROBE_LANES = 4
 
 
-class DetectorBundle(nn.Module):
-    """One body, two heads: pooled doc score + per-token lane logits."""
-
-    def __init__(self, model_name: str, n_lanes: int = N_LANES):
-        super().__init__()
-        self.body = load_encoder_body(model_name)
-        hidden = self.body.config.hidden_size
-        self.doc = nn.Linear(hidden, 2)
-        self.token = nn.Linear(hidden, n_lanes)
-
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        states = self.body(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        mask = attention_mask.unsqueeze(-1).to(states.dtype)
-        pooled = (states * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
-        return self.doc(pooled), self.token(states)
-
-
-def _export(model: nn.Module, sample: tuple[torch.Tensor, torch.Tensor], path: Path) -> str:
+def export_graph(model: nn.Module, sample: tuple[torch.Tensor, torch.Tensor], path: Path) -> str:
     dynamic_axes = {
         "input_ids": {0: "batch", 1: "seq"},
         "attention_mask": {0: "batch", 1: "seq"},
@@ -66,7 +54,7 @@ def _export(model: nn.Module, sample: tuple[torch.Tensor, torch.Tensor], path: P
         return "torchscript"
 
 
-def _latency(session, feeds: dict[str, np.ndarray], runs: int = 10) -> float:
+def latency_ms(session, feeds: dict[str, np.ndarray], runs: int = 10) -> float:
     session.run(None, feeds)
     start = time.perf_counter()
     for _ in range(runs):
@@ -76,9 +64,10 @@ def _latency(session, feeds: dict[str, np.ndarray], runs: int = 10) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["encoder"], default="encoder")
     ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--probe", action="store_true", help="untrained heads; measure only")
+    ap.add_argument("--ckpt", type=Path, help="trained checkpoint; omit for an untrained-head probe")
+    ap.add_argument("--probe", action="store_true",
+                    help="explicit form of the default: untrained heads, measure only")
     ap.add_argument("--out", type=Path, default=Path("artifacts/onnx"))
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
@@ -91,7 +80,8 @@ def main() -> int:
     int8_path = args.out / "detector.int8.onnx"
 
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    model = DetectorBundle(args.model).eval()
+    model = (from_checkpoint(args.ckpt, args.model) if args.ckpt
+             else DetectorBundle(args.model, PROBE_LANES).eval())
 
     text = "Here's the thing: we leverage robust pipelines to unlock synergies. " * 12
     enc = tok(text, return_tensors="pt", truncation=True, max_length=512, padding="max_length")
@@ -100,7 +90,7 @@ def main() -> int:
     with torch.no_grad():
         torch_doc, torch_token = model(*sample)
 
-    exporter = _export(model, sample, fp32_path)
+    exporter = export_graph(model, sample, fp32_path)
     quantize_dynamic(str(fp32_path), str(int8_path), weight_type=QuantType.QInt8)
 
     opts = ort.SessionOptions()
@@ -114,18 +104,19 @@ def main() -> int:
             "size_mb": round(path.stat().st_size / 1e6, 1),
             "doc_drift": float(np.abs(doc - torch_doc.numpy()).max()),
             "token_drift": float(np.abs(token - torch_token.numpy()).max()),
-            "latency_ms_512": round(_latency(sess, feeds), 1),
+            "latency_ms_512": round(latency_ms(sess, feeds), 1),
         }
         long_enc = tok(text * 3, return_tensors="np", truncation=True, max_length=1024, padding="max_length")
         long_feeds = {k: long_enc[k] for k in ("input_ids", "attention_mask")}
-        results[name]["latency_ms_1024"] = round(_latency(sess, long_feeds), 1)
+        results[name]["latency_ms_1024"] = round(latency_ms(sess, long_feeds), 1)
 
     report = {
         "model": args.model,
         "exporter": exporter,
         "params_m": round(sum(p.numel() for p in model.parameters()) / 1e6, 1),
         "threads": args.threads,
-        "untrained_heads": bool(args.probe),
+        "untrained_heads": args.ckpt is None,
+        "lanes": model.n_lanes,
         **results,
     }
     Path("artifacts").mkdir(exist_ok=True)

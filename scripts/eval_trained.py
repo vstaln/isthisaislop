@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""Post-training eval + quantization check for the fine-tuned encoder.
+"""Post-training evaluation — the one command to run after fine_tune_lfm.py.
 
-Runs AFTER training (artifacts/lfm/model.pt exists). Two jobs:
+    uv run python scripts/eval_trained.py --ckpt artifacts/lfm_v2/model.pt
 
-1. Per-register evaluation on the held-out val slice — same logic as the end of
-   fine_tune_lfm.main(), so you can re-check metrics without retraining, and
-   compare against the CPU floor (artifacts/MANIFEST.json: coai AUC 0.8643).
+Per-register metrics and the 1%-FPR calibration come out of a single pass over the
+same pair-safe split the trainer used: the same corpus with the same --val-frac /
+--cal-frac / --seed reproduces the same val and cal rows, so these numbers are
+comparable to the training manifest rather than a second opinion from a slightly
+different slice.
 
-2. Quantization probe: export the bundle to ONNX, INT8-dynamic quantize, report
-   logit drift + CPU latency. The pre-training export gate (--probe) uses
-   untrained heads; this uses the REAL trained weights so drift is meaningful.
+What it writes to --out:
+  eval.json            per-register AUROC (gated + raw), TPR@1%FPR, n, threshold
+  calibration.json     the operating threshold per register, fitted on cal only
+  cross_register.json  human-register x AI-register AUROC matrix
+  export_probe.json    INT8 drift and CPU latency, with --quantize
 
-Usage:
-  uv run python scripts/eval_trained.py \
-      --spans-parquet data/training/train_all.parquet \
-      --ckpt artifacts/lfm/model.pt \
-      --model LiquidAI/LFM2.5-Encoder-350M \
-      --out artifacts/lfm_eval
+Read the cross-register matrix before believing the headline. A model that learnt
+register or era rather than provenance scores near 1.0 on every cross pair while
+sitting at chance inside a register that holds both classes — that is how v1
+failed (docs/HANDOFF.md, V1 POSTMORTEM).
+
+--final-report additionally scores the held-out vault (eval/labels/*.jsonl plus the
+generator-disjoint HF holdout parquets). Those exist to be reported once, never to
+select a checkpoint against.
 """
 
 from __future__ import annotations
@@ -31,218 +37,156 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
 import torch  # noqa: E402
-from torch import nn  # noqa: E402
 from transformers import AutoTokenizer  # noqa: E402
 
-from slopdet.lfm import load_encoder_body  # noqa: E402
+from slopdet import corpus  # noqa: E402
+from slopdet.detector import from_checkpoint  # noqa: E402
+from slopdet.metrics import (  # noqa: E402
+    auroc,
+    cross_register_auroc,
+    per_register_metrics,
+    register_thresholds,
+)
+from slopdet.pairs import split_rows  # noqa: E402
+
+VAULT_JSONL = ("eval/labels/laguna.jsonl", "eval/labels/local.jsonl",
+               "eval/labels/deepseek_eval.jsonl")
 
 
-def auroc(scores: list[float], labels: list[int]) -> float:
-    """Area under ROC — same implementation as fine_tune_lfm."""
-    order = sorted(range(len(scores)), key=lambda i: -scores[i])
-    n_pos = sum(labels)
-    n_neg = len(labels) - n_pos
-    if n_pos == 0 or n_neg == 0:
-        return float("nan")
-    ranks = [i + 1 for i in order]
-    sum_pos_ranks = sum(r for i, r in zip(order, ranks) if labels[i])
-    return (sum_pos_ranks - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+@torch.no_grad()
+def score(model, tok, texts: list[str], device, max_len: int, batch_size: int) -> list[float]:
+    out: list[float] = []
+    for start in range(0, len(texts), batch_size):
+        enc = tok(texts[start:start + batch_size], truncation=True, max_length=max_len,
+                  padding=True, return_tensors="pt").to(device)
+        doc_logits, _ = model(enc["input_ids"], enc["attention_mask"])
+        out.extend(torch.softmax(doc_logits.float(), -1)[:, 1].cpu().tolist())
+    return out
 
 
-def tpr_at_fpr(scores: list[float], labels: list[int], fpr: float = 0.01) -> tuple[float, float]:
-    """Threshold at 1% FPR on humans, and the TPR the model gets there."""
-    from slopdet.calibrate import threshold_at_fpr
-
-    human = [s for s, y in zip(scores, labels) if y == 0]
-    if not human:
-        return float("nan"), float("nan")
-    thresh = threshold_at_fpr(human, fpr)
-    ai = [s for s, y in zip(scores, labels) if y == 1]
-    if not ai:
-        return float("nan"), thresh
-    tpr = sum(1 for s in ai if s > thresh) / len(ai)
-    return tpr, thresh
-
-
-def _gated_auroc(scores: list[float], labels: list[int], min_n: int = 200, min_pos: int = 20) -> float:
-    if len(labels) < min_n or sum(labels) < min_pos or sum(1 for y in labels if y == 0) < min_pos:
-        return float("nan")
-    return auroc(scores, labels)
-
-
-class DetectorBundle(nn.Module):
-    """One body, two heads — mirror of the export gate so weights load directly."""
-
-    def __init__(self, model_name: str, n_lanes: int):
-        super().__init__()
-        self.body = load_encoder_body(model_name)
-        hidden = self.body.config.hidden_size
-        self.doc = nn.Linear(hidden, 2)
-        self.token = nn.Linear(hidden, n_lanes + 1)  # +1 for class 0 (no lane)
-
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        states = self.body(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        mask = attention_mask.unsqueeze(-1).to(states.dtype)
-        pooled = (states * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
-        return self.doc(pooled), self.token(states)
+def read_jsonl(path: Path) -> list[tuple[str, int]]:
+    """(text, label) pairs from a hand-labeled eval file; `label` or `pile`, either way."""
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        label = rec.get("label", rec.get("pile"))
+        if label is None or not rec.get("text"):
+            continue
+        rows.append((rec["text"], int(label)))
+    return rows
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--spans-parquet", type=Path, required=True)
     ap.add_argument("--ckpt", type=Path, default=Path("artifacts/lfm/model.pt"))
+    ap.add_argument("--corpus", "--spans-parquet", dest="corpus", type=Path,
+                    default=Path("data/v2") / corpus.V2_TRAIN_FILE,
+                    help="the corpus the checkpoint was trained on")
+    ap.add_argument("--hf-file", default=corpus.V2_TRAIN_FILE)
     ap.add_argument("--model", default="LiquidAI/LFM2.5-Encoder-350M")
     ap.add_argument("--max-len", type=int, default=512)
+    ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--cal-frac", type=float, default=0.05)
+    ap.add_argument("--seed", type=int, default=0, help="must match the training run")
     ap.add_argument("--out", type=Path, default=Path("artifacts/lfm_eval"))
+    ap.add_argument("--final-report", action="store_true",
+                    help="also score the held-out vault — report only, never select on it")
     ap.add_argument("--quantize", action="store_true", help="also run the INT8 export probe")
     args = ap.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[eval] device={device}, ckpt={args.ckpt}")
-
     if not args.ckpt.exists():
-        print(f"[eval] no checkpoint at {args.ckpt} — train first (Colab notebook).")
+        print(f"[eval] no checkpoint at {args.ckpt} — run scripts/fine_tune_lfm.py first.")
         return 1
 
-    # ---- load rows + lanes (reuse fine_tune_lfm.load_rows) ----
-    from fine_tune_lfm import load_rows
-    import random
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[eval] device={device} ckpt={args.ckpt}", flush=True)
 
-    rows = load_rows(None, args.spans_parquet, False)
-    lanes = sorted({s["lane"] for r in rows for s in r["spans"]})
-    # same per-(register,label) split as training — val/cal distinct so thresholds not circular
-    random.Random(0).shuffle(rows)
-    val_rows, cal_rows = [], []
-    for register in sorted({r["register"] for r in rows}):
-        for label in (0, 1):
-            group = [r for r in rows if r["register"] == register and r["label"] == label]
-            n_val = max(1, int(len(group) * args.val_frac)) if group else 0
-            n_cal = max(1, int(len(group) * args.cal_frac)) if group else 0
-            if len(group) and n_val + n_cal >= len(group):
-                n_val = max(1, len(group) // 10) if len(group) >= 10 else 1
-                n_cal = 1 if len(group) >= 3 else 0
-                if n_val + n_cal >= len(group):
-                    n_cal = 0
-            val_rows += group[:n_val]
-            cal_rows += group[n_val:n_val + n_cal]
-    print(f"[eval] {len(val_rows)} val / {len(cal_rows)} cal rows, lanes={lanes}", flush=True)
+    rows = corpus.load_rows(corpus.resolve(args.corpus, args.hf_file))
+    _, val_rows, cal_rows = split_rows(rows, args.val_frac, args.cal_frac, args.seed)
+    print(f"[eval] {len(val_rows)} val / {len(cal_rows)} cal rows over "
+          f"{len({r['register'] for r in val_rows})} registers", flush=True)
 
-    # ---- build model, load trained weights ----
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    model = DetectorBundle(args.model, len(lanes)).to(device)
-    sd = torch.load(args.ckpt, map_location=device)
-    # state dict may be wrapped or bare
-    if "model" in sd:
-        sd = sd["model"]
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if missing:
-        print(f"[eval] WARNING missing keys: {missing[:5]}")
-    model.eval()
+    model = from_checkpoint(args.ckpt, args.model, device)
+    print(f"[eval] checkpoint carries {model.n_lanes} lanes", flush=True)
 
-    # ---- score the val set ----
-    scores, labels, regs = [], [], []
-    t0 = time.time()
-    with torch.no_grad():
-        for r in val_rows:
-            enc = tok(r["text"], truncation=True, max_length=args.max_len, return_tensors="pt")
-            ids, mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
-            doc_logits, _ = model(ids, mask)
-            prob = torch.softmax(doc_logits, -1)[0, 1].item()
-            scores.append(prob)
-            labels.append(r["label"])
-            regs.append(r["register"])
-    print(f"[eval] scored {len(val_rows)} in {time.time()-t0:.1f}s", flush=True)
+    started = time.time()
+    val_scores = score(model, tok, [r["text"] for r in val_rows], device, args.max_len, args.batch_size)
+    cal_scores = score(model, tok, [r["text"] for r in cal_rows], device, args.max_len, args.batch_size)
+    print(f"[eval] scored {len(val_scores) + len(cal_scores)} docs in {time.time() - started:.1f}s",
+          flush=True)
 
-    # ---- thresholds from cal (not val) — M2 fix ----
-    cal_scores, cal_labels, cal_regs = [], [], []
-    if cal_rows:
-        with torch.no_grad():
-            for r in cal_rows:
-                enc = tok(r["text"], truncation=True, max_length=args.max_len, return_tensors="pt")
-                ids, mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
-                doc_logits, _ = model(ids, mask)
-                cal_scores.append(float(torch.softmax(doc_logits, -1)[0, 1].item()))
-                cal_labels.append(r["label"])
-                cal_regs.append(r["register"])
-    cal_thresh: dict[str, float] = {}
-    if cal_scores:
-        for reg in sorted(set(cal_regs)):
-            idx = [i for i, r in enumerate(cal_regs) if r == reg]
-            s = [cal_scores[i] for i in idx]
-            y = [cal_labels[i] for i in idx]
-            _, thr = tpr_at_fpr(s, y)
-            cal_thresh[reg] = thr
-        _, thr_all = tpr_at_fpr(cal_scores, cal_labels)
-        cal_thresh["all"] = thr_all
+    val_labels = [r["label"] for r in val_rows]
+    val_regs = [r["register"] for r in val_rows]
+    thresholds = register_thresholds(cal_scores, [r["label"] for r in cal_rows],
+                                     [r["register"] for r in cal_rows])
+    metrics = per_register_metrics(val_scores, val_labels, val_regs, thresholds)
+    matrix = cross_register_auroc(val_scores, val_labels, val_regs)
 
-    # ---- per-register metrics with gating (M4) ----
-    metrics: dict[str, dict] = {}
-    for register in sorted(set(regs)):
-        idx = [i for i, r in enumerate(regs) if r == register]
-        s = [scores[i] for i in idx]
-        y = [labels[i] for i in idx]
-        thr = cal_thresh.get(register, tpr_at_fpr(s, y)[1])
-        tpr = sum(1 for sc, lb in zip(s, y) if lb == 1 and sc > thr) / max(1, sum(1 for lb in y if lb == 1)) if any(lb == 1 for lb in y) else float("nan")
-        if sum(1 for lb in y if lb == 1) == 0 or sum(1 for lb in y if lb == 0) == 0:
-            tpr = float("nan")
-        metrics[register] = {
-            "n": len(idx), "auroc": _gated_auroc(s, y), "auroc_raw": auroc(s, y),
-            "tpr_at_1pct_fpr": tpr, "threshold": thr,
-            "threshold_source": "cal" if register in cal_thresh else "val",
-        }
-    all_thr = cal_thresh.get("all", tpr_at_fpr(scores, labels)[1])
-    all_tpr = sum(1 for sc, lb in zip(scores, labels) if lb == 1 and sc > all_thr) / max(1, sum(1 for lb in labels if lb == 1))
-    metrics["all"] = {
-        "n": len(labels), "auroc": _gated_auroc(scores, labels), "auroc_raw": auroc(scores, labels),
-        "tpr_at_1pct_fpr": all_tpr, "threshold": all_thr,
-        "threshold_source": "cal" if "all" in cal_thresh else "val",
-        "note": "all is register-imbalanced; report pile/coai separately (K3)",
-    }
-    print(json.dumps(metrics, indent=2))
+    if args.final_report:
+        print("[eval] VAULT: final-reporting slices — selecting a checkpoint against "
+              "these invalidates them", flush=True)
+        for name in VAULT_JSONL:
+            path = ROOT / name
+            if not path.exists():
+                metrics[f"vault:{Path(name).stem}"] = {"error": "missing"}
+                continue
+            pairs = read_jsonl(path)
+            scores = score(model, tok, [t for t, _ in pairs], device, args.max_len, args.batch_size)
+            metrics[f"vault:{Path(name).stem}"] = {
+                "n": len(pairs), "auroc": auroc(scores, [y for _, y in pairs])}
+        for hf_file in corpus.V2_HOLDOUT_FILES:
+            holdout = corpus.load_rows(corpus.resolve(Path("data/v2") / hf_file, hf_file))
+            scores = score(model, tok, [r["text"] for r in holdout], device,
+                           args.max_len, args.batch_size)
+            metrics[f"vault:{Path(hf_file).stem}"] = {
+                "n": len(holdout), "auroc": auroc(scores, [r["label"] for r in holdout])}
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "eval.json").write_text(json.dumps(metrics, indent=2) + "\n")
-    print(f"[eval] wrote {args.out / 'eval.json'}")
+    (args.out / "cross_register.json").write_text(json.dumps(matrix, indent=2) + "\n")
+    (args.out / "calibration.json").write_text(json.dumps(
+        {"fpr": 0.01,
+         "per_register": {k: v["threshold"] for k, v in metrics.items() if "threshold" in v},
+         "threshold_source": "cal" if cal_scores else "val"}, indent=2) + "\n")
+    print(json.dumps(metrics, indent=2))
+    if matrix:
+        print("[eval] cross-register AUROC (near 1.0 everywhere = register shortcut):")
+        for name, entry in sorted(matrix.items()):
+            print(f"  {name:44s} n={entry['n']:6d} auroc={entry['auroc']:.4f}")
+    print(f"[eval] wrote {args.out}/eval.json, cross_register.json, calibration.json")
 
-    # ---- optional quantization probe with real weights ----
     if args.quantize:
-        from export_onnx import _export, _latency  # reuse the gate's helpers
+        import numpy as np
         import onnxruntime as ort
 
+        from export_onnx import export_graph, latency_ms
+
         onnx_path = args.out / "bundle.onnx"
-        sample = (
-            torch.randint(0, 60000, (1, args.max_len)),
-            torch.ones(1, args.max_len, dtype=torch.long),
-        )
-        kind = _export(model, sample, onnx_path)
-        sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-        feeds = {
-            "input_ids": sample[0].numpy(),
-            "attention_mask": sample[1].numpy(),
-        }
-        # drift: fp32 (torch) vs int8 (onnx) doc logits on 50 val docs
+        sample = (torch.randint(0, 60000, (1, args.max_len)),
+                  torch.ones(1, args.max_len, dtype=torch.long))
+        kind = export_graph(model, sample, onnx_path)
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
         drift = []
         with torch.no_grad():
-            for r in val_rows[:50]:
-                enc = tok(r["text"], truncation=True, max_length=args.max_len, return_tensors="pt")
+            for row in val_rows[:50]:
+                enc = tok(row["text"], truncation=True, max_length=args.max_len, return_tensors="pt")
                 ids, mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
-                doc_logits, _ = model(ids, mask)
-                fp = doc_logits[0].cpu().numpy()
-                q = sess.run(None, {"input_ids": ids.cpu().numpy(), "attention_mask": mask.cpu().numpy()})[0][0]
-                drift.append(float(np.abs(fp - q).max()))
-        probe = {
-            "export": kind, "latency_ms": _latency(sess, feeds),
-            "max_logit_drift_int8": float(np.max(drift)) if drift else None,
-            "model": args.model,
-        }
-        print(json.dumps(probe, indent=2))
+                fp32 = model(ids, mask)[0][0].cpu().numpy()
+                int8 = session.run(None, {"input_ids": ids.cpu().numpy(),
+                                          "attention_mask": mask.cpu().numpy()})[0][0]
+                drift.append(float(np.abs(fp32 - int8).max()))
+        probe = {"export": kind, "model": args.model,
+                 "latency_ms": latency_ms(session, {"input_ids": sample[0].numpy(),
+                                                    "attention_mask": sample[1].numpy()}),
+                 "max_logit_drift_int8": max(drift) if drift else None}
         (args.out / "export_probe.json").write_text(json.dumps(probe, indent=2) + "\n")
-        print(f"[eval] wrote {args.out / 'export_probe.json'}")
+        print(json.dumps(probe, indent=2))
+        print(f"[eval] wrote {args.out}/export_probe.json")
 
     return 0
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch the training corpora into data/raw/.
 
-coai is fetched on demand by colab_pipeline; this pulls the three companion
+coai is fetched on demand by scripts/train_cpu_scorer.py; this pulls the three companion
 piles: StoryScope (AI fiction), GutenbergFiction (human fiction), and the
 blog authorship corpus (human blogs — the register where slop actually lives).
 """

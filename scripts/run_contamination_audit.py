@@ -28,12 +28,12 @@ TRAIN = ROOT / "data/v2/v2_train.parquet.labeled.parquet"
 SAMPLE = ROOT / "data/v2/v2_audit_sample.parquet"
 
 JUDGE_ENV = {  # stage 2 judge = ox-alpha-free via opencode-go (same key as chat)
-    "OPENROUTER_BASE": "https://opencode.ai/zen/go/v1",
-    "OPENROUTER_MODEL": "ox-alpha-free",
+    "ITAIS_JUDGE_BASE": "https://opencode.ai/zen/go/v1",
+    "ITAIS_JUDGE_MODEL": "ox-alpha-free",
 }
 WHY_ENV = {  # stage 3 explainer = independent model family
-    "OPENROUTER_BASE": "https://openrouter.ai/api/v1",
-    "OPENROUTER_MODEL": "google/gemini-2.5-flash",
+    "ITAIS_JUDGE_BASE": "https://openrouter.ai/api/v1",
+    "ITAIS_JUDGE_MODEL": "google/gemini-2.5-flash",
 }
 
 
@@ -76,7 +76,7 @@ def main() -> int:
            "--per-register", "250"]) != 0:
         return 1
     key = sys.argv[1] if len(sys.argv) > 1 else ""
-    env_judge = {"OPENROUTER_API_KEY": key} if key else {}
+    env_judge = {"ITAIS_JUDGE_API_KEY": key} if key else {}
     if sh(["uv", "run", "python", str(ROOT / "scripts/rubric_label.py"),
            "--in", str(SAMPLE), "--batch-docs", "4", "--workers", "6"],
           env_extra={**JUDGE_ENV, **env_judge}) != 0:

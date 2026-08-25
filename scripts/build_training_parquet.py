@@ -17,7 +17,6 @@ are human (registers 'gutenberg','blogs','scp'), coai is balanced academic
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -26,6 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd  # noqa: E402
 
+from slopdet.corpus import coerce_spans  # noqa: E402
 from slopdet.labels import parse_label  # noqa: E402
 
 
@@ -33,12 +33,11 @@ def load_spans(path: Path, register: str) -> pd.DataFrame:
     df = pd.read_parquet(path)
     rows = []
     for rec in df.to_dict("records"):
-        spans = rec.get("spans") or []
-        if isinstance(spans, str):
-            try:
-                spans = json.loads(spans)
-            except json.JSONDecodeError:
-                spans = []
+        # `rec.get("spans") or []` used to live here and raised
+        # "truth value of an array with more than one element is ambiguous" on
+        # every multi-span row, because pandas hands the column back as a numpy
+        # array. coerce_spans is the one tolerant reader, shared with the trainer.
+        spans = coerce_spans(rec.get("spans"))
         rows.append(
             {
                 "text": rec["text"],
