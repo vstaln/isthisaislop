@@ -17,13 +17,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
 train = [
   "torch>=2.0",
   "transformers>=5.15",  # LFM2 encoder path verified on 5.15.0
   "accelerate>=0.30",
   "bitsandbytes>=0.43",
   "datasets>=2.19",
+  "huggingface-hub>=0.34",  # pulls the v2 corpus when data/ is empty
   "safetensors>=0.4",
   "numpy>=1.26",
   "pyarrow>=15.0",
@@ -36,6 +36,11 @@ export = [
   "onnxruntime>=1.18",
   "onnxscript>=0.1",
 ]
+
+# A default group, so `uv run python -m pytest -q` works on a fresh clone without
+# anyone having to remember an --extra.
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 slopdet = "slopdet.cli:main"

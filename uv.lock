@@ -2428,9 +2428,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
 export = [
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -2440,6 +2437,7 @@ train = [
     { name = "accelerate" },
     { name = "bitsandbytes" },
     { name = "datasets" },
+    { name = "huggingface-hub" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
@@ -2451,11 +2449,17 @@ train = [
     { name = "transformers" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=0.30" },
     { name = "bitsandbytes", marker = "extra == 'train'", specifier = ">=0.43" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=2.19" },
+    { name = "huggingface-hub", marker = "extra == 'train'", specifier = ">=0.34" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "numpy", marker = "extra == 'train'", specifier = ">=1.26" },
     { name = "onnx", marker = "extra == 'export'", specifier = ">=1.16" },
@@ -2464,7 +2468,6 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'train'", specifier = ">=2.0" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.11" },
     { name = "pyarrow", marker = "extra == 'train'", specifier = ">=15.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "regex", specifier = ">=2024.0" },
     { name = "safetensors", marker = "extra == 'train'", specifier = ">=0.4" },
@@ -2472,7 +2475,10 @@ requires-dist = [
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.0" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=5.15" },
 ]
-provides-extras = ["dev", "train", "export"]
+provides-extras = ["train", "export"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "sympy"
