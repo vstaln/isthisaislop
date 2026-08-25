@@ -173,7 +173,7 @@ rebuild command; that is what makes the table a handoff instead of an inventory.
 **Fix owed here:** `artifacts/MANIFEST.json` is the one artifact path git tracks — put row counts and
 sha256 per file in it, so a second machine can prove it rebuilt the same corpus.
 
-**Register coverage is the real data problem.** coai is arxiv abstracts vs LLM paraphrases: academic
+**Register coverage is the real data problem** — `docs/HUMAN-CORPUS.md` specs the fix. coai is arxiv abstracts vs LLM paraphrases: academic
 register, low slop density. The product runs on blogs, emails and fiction. StoryScope covers AI
 fiction; Gutenberg/WP/SCP cover human fiction; blogs cover the register the word "slop" was coined
 for and are still unextracted. Training on coai and gating on coai measures the easiest slice we own.
