@@ -2,7 +2,7 @@
 """Concurrent LLM-judge labeling engine for the v2 slop corpus.
 
 Reads a parquet (--in), builds a deterministic doc_id per row
-(f"{row_index}:{sha1(text)[:12]}"), and asks an OpenRouter model for a JSON
+(f"{row_index}:{sha1(text)[:12]}"), and asks a judge model for a JSON
 rubric verdict defined by the taxonomy system prompt
 (research/taxonomy_v2_system_prompt.txt -> {"ai_verdict", "confidence",
 "scores", "spans"}). With --batch-docs N > 1, up to N docs share one API
@@ -20,8 +20,13 @@ Concurrency: ThreadPoolExecutor over requests (--workers thread pools of
 batches, --workers default 8). Retries: up to 6 per API call, backoff
 min(90, 3*2^attempt)s on 429/5xx/timeouts.
 
-Env: OPENROUTER_MODEL (default stealth/ox-alpha), OPENROUTER_API_KEY
-(also parsed manually from repo .env — no dotenv import).
+Any OpenAI-compatible /chat/completions endpoint works — OpenRouter is just the
+default base URL, not a requirement. Env (the OPENROUTER_* spellings are still
+read as fallbacks so older invocations keep working):
+
+  ITAIS_JUDGE_BASE     base URL, default https://openrouter.ai/api/v1
+  ITAIS_JUDGE_MODEL    model id, default stealth/ox-alpha
+  ITAIS_JUDGE_API_KEY  bearer token, also parsed from repo .env (no dotenv import)
 
 Usage:
   uv run python scripts/rubric_label.py --in data/v2_train.parquet
@@ -60,10 +65,19 @@ except ImportError:  # pragma: no cover - exercised on envs without requests
 
 ROOT = Path(__file__).resolve().parents[1]
 RUBRIC_DIR = ROOT / "artifacts" / "v2_rubric"
-# base override lets the same engine run against any OpenAI-compatible
-# endpoint (e.g. OPENROUTER_BASE=https://opencode.ai/zen/go/v1 for ox-alpha)
-import os as _os
-API_URL = (_os.environ.get("OPENROUTER_BASE") or "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
+
+DEFAULT_BASE = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL = "stealth/ox-alpha"
+
+
+def judge_env(name: str, default: str = "") -> str:
+    """ITAIS_JUDGE_<name>, falling back to the older OPENROUTER_<name> spelling."""
+    return (os.environ.get(f"ITAIS_JUDGE_{name}")
+            or os.environ.get(f"OPENROUTER_{name}")
+            or default)
+
+
+API_URL = judge_env("BASE", DEFAULT_BASE).rstrip("/") + "/chat/completions"
 MAX_RETRIES = 6
 TEXT_TRUNC = 6000
 
@@ -78,8 +92,8 @@ BATCH_SUFFIX = (
 
 
 def load_env_key() -> str:
-    """OPENROUTER_API_KEY from env, else parsed manually from repo .env."""
-    key = os.environ.get("OPENROUTER_API_KEY", "")
+    """The judge API key from the environment, else parsed out of the repo .env."""
+    key = judge_env("API_KEY")
     if key:
         return key
     env = ROOT / ".env"
@@ -89,7 +103,7 @@ def load_env_key() -> str:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            if k.strip() == "OPENROUTER_API_KEY":
+            if k.strip() in ("ITAIS_JUDGE_API_KEY", "OPENROUTER_API_KEY"):
                 return v.strip().strip('"').strip("'")
     return ""
 
@@ -134,7 +148,7 @@ def build_batch_prompt(docs: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def call_openrouter(model: str, key: str, system: str, user: str,
+def call_judge(model: str, key: str, system: str, user: str,
                     expect_key: str = "ai_verdict",  # normalized via _norm_result
                     timeout: int = 180) -> tuple[dict, int]:
     """One API call. Returns (parsed_json, raw_response_chars).
@@ -183,7 +197,7 @@ def call_openrouter(model: str, key: str, system: str, user: str,
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             last_err = f"bad body: {e}"
             time.sleep(min(90, 3 * 2 ** attempt))
-    raise RuntimeError(f"openrouter failed after {MAX_RETRIES} attempts: {last_err}")
+    raise RuntimeError(f"judge endpoint failed after {MAX_RETRIES} attempts: {last_err}")
 
 
 def done_doc_ids(shard: Path) -> set[str]:
@@ -212,7 +226,7 @@ def _base_rec(row: dict) -> dict:
 def label_single(model: str, key: str, system: str, row: dict) -> dict:
     """Label one doc via its own API call; returns a jsonl record (never raises)."""
     try:
-        result, raw_chars = call_openrouter(
+        result, raw_chars = call_judge(
             model, key, system,
             build_prompt(row["register"], str(row.get("generator", "")), str(row["text"])),
         )
@@ -239,7 +253,7 @@ def label_batch(model: str, key: str, system: str,
     """
     bases = [_base_rec(d) for d in docs]
     try:
-        parsed, raw_chars = call_openrouter(
+        parsed, raw_chars = call_judge(
             model, key, batch_sys, build_batch_prompt(docs), expect_key="results")
     except RuntimeError as e:
         return [{**b, "error": f"batch: {e}", "raw_response_chars": 0} for b in bases]
@@ -258,7 +272,7 @@ def label_batch(model: str, key: str, system: str,
     # Defensive: retry any doc the batch dropped, individually, once.
     for j in missing:
         try:
-            result, raw_chars = call_openrouter(
+            result, raw_chars = call_judge(
                 model, key, system,
                 build_prompt(docs[j]["register"], str(docs[j].get("generator", "")),
                              str(docs[j]["text"])),
@@ -368,12 +382,12 @@ def main() -> int:
         print(f"[rubric] dry-run OK: resume set size={len(done)}", flush=True)
         return 0
 
-    model = os.environ.get("OPENROUTER_MODEL", "stealth/ox-alpha")
+    model = judge_env("MODEL", DEFAULT_MODEL)
     key = load_env_key()
     if not key:
-        print("[rubric] no OPENROUTER_API_KEY (env or .env); cannot run", flush=True)
+        print("[rubric] no ITAIS_JUDGE_API_KEY (env or .env); cannot run", flush=True)
         return 1
-    print(f"[rubric] model={model}", flush=True)
+    print(f"[rubric] model={model} endpoint={API_URL}", flush=True)
 
     def run_unit(unit: list[dict]) -> list[dict]:
         if len(unit) == 1:
